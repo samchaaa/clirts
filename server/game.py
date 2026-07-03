@@ -52,6 +52,7 @@ class GameState:
     next_unit_id: int = 1
     next_node_id: int = 1
     players: set[int] = field(default_factory=set)
+    shots: list[dict] = field(default_factory=list)
     started: bool = False
     winner: int | None = None
 
@@ -200,6 +201,7 @@ class GameState:
 
     def tick_update(self):
         self.tick += 1
+        self.shots = []
         self._move_units()
         self._separate_units()
         self._resolve_gathering()
@@ -309,6 +311,15 @@ class GameState:
             dist = _dist(unit.x, unit.y, target.x, target.y)
             if dist <= unit.stats["range"]:
                 target.hp -= unit.stats["damage"]
+                self._record_shot(unit, target)
+
+    def _record_shot(self, unit: Unit, target: Unit):
+        if unit.type in ("fort", "range"):
+            self.shots.append({
+                "owner": unit.owner,
+                "fx": round(unit.x, 1), "fy": round(unit.y, 1),
+                "tx": round(target.x, 1), "ty": round(target.y, 1),
+            })
 
     def _auto_fire(self, unit: Unit):
         auto_range = unit.stats["auto_range"]
@@ -323,6 +334,7 @@ class GameState:
                 best, best_dist = other, d
         if best:
             best.hp -= unit.stats["damage"]
+            self._record_shot(unit, best)
 
     def _cleanup_dead(self):
         dead = [uid for uid, u in self.units.items() if u.hp <= 0]
@@ -353,6 +365,7 @@ class GameState:
                 {"id": n.id, "x": round(n.x, 1), "y": round(n.y, 1), "amount": n.amount}
                 for n in self.resource_nodes.values()
             ],
+            "shots": self.shots,
             "winner": self.winner,
         }
 

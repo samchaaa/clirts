@@ -43,6 +43,10 @@ class Renderer:
         grid = [[" " for _ in range(MAP_WIDTH)] for _ in range(MAP_HEIGHT)]
         color_grid = [["" for _ in range(MAP_WIDTH)] for _ in range(MAP_HEIGHT)]
 
+        # projectile tracers first, so units/nodes draw over them
+        for shot in snap.get("shots", []):
+            self._draw_shot(grid, color_grid, shot)
+
         for node in nodes:
             nx, ny = int(round(node["x"])), int(round(node["y"]))
             if 0 <= nx < MAP_WIDTH and 0 <= ny < MAP_HEIGHT:
@@ -113,6 +117,25 @@ class Renderer:
 
         sys.stdout.write("".join(out))
         sys.stdout.flush()
+
+    def _draw_shot(self, grid, color_grid, shot):
+        fx, fy = shot["fx"], shot["fy"]
+        tx, ty = shot["tx"], shot["ty"]
+        dx, dy = tx - fx, ty - fy
+        steps = max(1, int(round(max(abs(dx), abs(dy)))))
+        c = PLAYER_COLORS.get(shot.get("owner"), RESET)
+        for i in range(1, steps):
+            x = int(round(fx + dx * i / steps))
+            y = int(round(fy + dy * i / steps))
+            if 0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT:
+                grid[y][x] = "*"
+                color_grid[y][x] = c + DIM
+        # impact marker on the target cell (units drawn later cover it,
+        # except the frame where the target just died)
+        ix, iy = int(round(tx)), int(round(ty))
+        if 0 <= ix < MAP_WIDTH and 0 <= iy < MAP_HEIGHT:
+            grid[iy][ix] = "x"
+            color_grid[iy][ix] = c
 
     def _build_sidebar(self, units, nodes, cursor_x, cursor_y,
                        selected_ids) -> list[str]:
