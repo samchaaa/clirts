@@ -3,9 +3,9 @@ import random
 from dataclasses import dataclass, field
 
 from shared.messages import (
-    MAP_WIDTH, MAP_HEIGHT, UNIT_SPEED, UNIT_HP, UNIT_DAMAGE,
-    UNIT_ATTACK_RANGE, GATHER_RANGE, GATHER_RATE, STARTING_RESOURCES,
-    STARTING_UNITS, WORKER_COST, Command,
+    MAP_WIDTH, MAP_HEIGHT,
+    GATHER_RANGE, GATHER_RATE, STARTING_RESOURCES,
+    STARTING_UNITS, UNIT_STATS, FORT_BUILD_RADIUS, Command,
 )
 
 # 1.5 guarantees distinct rendered cells even when a pair separates
@@ -19,11 +19,20 @@ class Unit:
     owner: int
     x: float
     y: float
-    hp: int = UNIT_HP
+    type: str = "worker"
+    hp: int | None = None
     target: tuple[float, float] | None = None
     attack_target: int | None = None
     gathering: bool = False
     gather_target: int | None = None
+
+    def __post_init__(self):
+        if self.hp is None:
+            self.hp = UNIT_STATS[self.type]["hp"]
+
+    @property
+    def stats(self) -> dict:
+        return UNIT_STATS[self.type]
 
 
 @dataclass
@@ -107,13 +116,16 @@ class GameState:
         tx, ty = float(target[0]), float(target[1])
         if not (0 <= tx < MAP_WIDTH and 0 <= ty < MAP_HEIGHT):
             return False
+        movable = [uid for uid in unit_ids
+                   if (u := self.units.get(uid))
+                   and u.stats["speed"] > 0]
         i = 0
-        for uid in unit_ids:
+        for uid in movable:
             unit = self.units.get(uid)
             if unit and unit.owner == player_id and unit.hp > 0:
                 # fan group moves out into a grid formation so units
                 # don't converge onto the same cell
-                side = max(1, math.ceil(math.sqrt(len(unit_ids))))
+                side = max(1, math.ceil(math.sqrt(len(movable))))
                 ox = (i % side - (side - 1) / 2) * MIN_SEPARATION
                 oy = (i // side - (side - 1) / 2) * MIN_SEPARATION
                 unit.target = (
@@ -150,7 +162,8 @@ class GameState:
             return False
         for uid in unit_ids:
             unit = self.units.get(uid)
-            if unit and unit.owner == player_id and unit.hp > 0:
+            if (unit and unit.owner == player_id and unit.hp > 0
+                    and unit.type == "worker"):
                 unit.gather_target = node_id
                 unit.gathering = True
                 unit.target = None
@@ -161,15 +174,28 @@ class GameState:
         target = cmd.get("target")
         if not target or len(target) != 2:
             return False
+        unit_type = cmd.get("unit_type", "worker")
+        if unit_type not in UNIT_STATS:
+            return False
         tx, ty = float(target[0]), float(target[1])
         if not (0 <= tx < MAP_WIDTH and 0 <= ty < MAP_HEIGHT):
             return False
-        if self.resources.get(player_id, 0) < WORKER_COST:
+        cost = UNIT_STATS[unit_type]["cost"]
+        if self.resources.get(player_id, 0) < cost:
             return False
-        self.resources[player_id] -= WORKER_COST
+        if unit_type in ("tank", "range"):
+            near_fort = any(
+                u.type == "fort" and u.owner == player_id and u.hp > 0
+                and _dist(u.x, u.y, tx, ty) <= FORT_BUILD_RADIUS
+                for u in self.units.values()
+            )
+            if not near_fort:
+                return False
+        self.resources[player_id] -= cost
         uid = self.next_unit_id
         self.next_unit_id += 1
-        self.units[uid] = Unit(id=uid, owner=player_id, x=tx, y=ty)
+        self.units[uid] = Unit(id=uid, owner=player_id, x=tx, y=ty,
+                               type=unit_type)
         return True
 
     def tick_update(self):
@@ -183,7 +209,7 @@ class GameState:
 
     def _move_units(self):
         for unit in self.units.values():
-            if unit.hp <= 0:
+            if unit.hp <= 0 or unit.stats["speed"] <= 0:
                 continue
 
             move_target = None
@@ -191,7 +217,7 @@ class GameState:
                 target_unit = self.units.get(unit.attack_target)
                 if target_unit and target_unit.hp > 0:
                     dist = _dist(unit.x, unit.y, target_unit.x, target_unit.y)
-                    if dist > UNIT_ATTACK_RANGE:
+                    if dist > unit.stats["range"]:
                         move_target = (target_unit.x, target_unit.y)
                 else:
                     unit.attack_target = None
@@ -212,7 +238,7 @@ class GameState:
                 dx, dy = tx - unit.x, ty - unit.y
                 dist = math.sqrt(dx * dx + dy * dy)
                 if dist > 0.1:
-                    step = min(UNIT_SPEED, dist)
+                    step = min(unit.stats["speed"], dist)
                     unit.x += (dx / dist) * step
                     unit.y += (dy / dist) * step
                     unit.x = max(0, min(MAP_WIDTH - 1, unit.x))
@@ -236,10 +262,17 @@ class GameState:
                     dx, dy = math.cos(angle), math.sin(angle)
                     dist = 1.0
                 nx, ny = dx / dist, dy / dist
-                a.x = max(0, min(MAP_WIDTH - 1, a.x - nx * push))
-                a.y = max(0, min(MAP_HEIGHT - 1, a.y - ny * push))
-                b.x = max(0, min(MAP_WIDTH - 1, b.x + nx * push))
-                b.y = max(0, min(MAP_HEIGHT - 1, b.y + ny * push))
+                # buildings don't budge: the mobile unit takes the full push
+                a_fixed = a.stats["speed"] <= 0
+                b_fixed = b.stats["speed"] <= 0
+                if a_fixed and b_fixed:
+                    continue
+                a_push = 0 if a_fixed else (push * 2 if b_fixed else push)
+                b_push = 0 if b_fixed else (push * 2 if a_fixed else push)
+                a.x = max(0, min(MAP_WIDTH - 1, a.x - nx * a_push))
+                a.y = max(0, min(MAP_HEIGHT - 1, a.y - ny * a_push))
+                b.x = max(0, min(MAP_WIDTH - 1, b.x + nx * b_push))
+                b.y = max(0, min(MAP_HEIGHT - 1, b.y + ny * b_push))
 
     def _resolve_gathering(self):
         for unit in self.units.values():
@@ -262,15 +295,34 @@ class GameState:
 
     def _resolve_combat(self):
         for unit in self.units.values():
-            if unit.hp <= 0 or unit.attack_target is None:
+            if unit.hp <= 0:
+                continue
+            if unit.attack_target is None:
+                # stateless auto-fire: shoot but never chase or
+                # override move orders
+                self._auto_fire(unit)
                 continue
             target = self.units.get(unit.attack_target)
             if not target or target.hp <= 0:
                 unit.attack_target = None
                 continue
             dist = _dist(unit.x, unit.y, target.x, target.y)
-            if dist <= UNIT_ATTACK_RANGE:
-                target.hp -= UNIT_DAMAGE
+            if dist <= unit.stats["range"]:
+                target.hp -= unit.stats["damage"]
+
+    def _auto_fire(self, unit: Unit):
+        auto_range = unit.stats["auto_range"]
+        if auto_range <= 0:
+            return
+        best, best_dist = None, auto_range
+        for other in self.units.values():
+            if other.owner == unit.owner or other.hp <= 0:
+                continue
+            d = _dist(unit.x, unit.y, other.x, other.y)
+            if d <= best_dist:
+                best, best_dist = other, d
+        if best:
+            best.hp -= unit.stats["damage"]
 
     def _cleanup_dead(self):
         dead = [uid for uid, u in self.units.items() if u.hp <= 0]
@@ -292,7 +344,7 @@ class GameState:
             "type": "snapshot",
             "tick": self.tick,
             "units": [
-                {"id": u.id, "owner": u.owner,
+                {"id": u.id, "owner": u.owner, "type": u.type,
                  "x": round(u.x, 1), "y": round(u.y, 1), "hp": u.hp}
                 for u in self.units.values()
             ],

@@ -7,7 +7,7 @@ import urllib.parse
 from client.net import NetworkClient
 from client.render import Renderer
 from client.input import get_key, setup_terminal, restore_terminal
-from shared.messages import MAP_WIDTH, MAP_HEIGHT
+from shared.messages import MAP_WIDTH, MAP_HEIGHT, UNIT_STATS
 
 
 class GameClient:
@@ -178,13 +178,18 @@ class GameClient:
                     self.renderer.status_message = f"Gathering from node {node['id']}"
                 else:
                     self.renderer.status_message = "No resource node at cursor"
-        elif k == 'b':
+        elif k in ('b', 't', 'r', 'c'):
+            unit_type = {'b': 'worker', 't': 'tank',
+                         'r': 'range', 'c': 'fort'}[k]
             await self.net.send({
                 "type": "command",
                 "command": "build",
+                "unit_type": unit_type,
                 "target": [self.cursor_x, self.cursor_y],
             })
-            self.renderer.status_message = f"Building unit at ({self.cursor_x},{self.cursor_y})"
+            cost = UNIT_STATS[unit_type]["cost"]
+            self.renderer.status_message = (
+                f"Building {unit_type} ({cost}) at ({self.cursor_x},{self.cursor_y})")
         elif k == 'e':
             self.selected_ids.clear()
             self.renderer.status_message = "Selection cleared"

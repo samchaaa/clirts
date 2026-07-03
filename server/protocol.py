@@ -110,7 +110,13 @@ async def handle_message(
             return player, room
 
         player.last_heartbeat = time.time()
-        room.state.apply_command(player.id, msg)
+        ok = room.state.apply_command(player.id, msg)
+        if not ok:
+            await websocket.send(encode({
+                "type": MsgType.ERROR,
+                "message": f"{msg.get('command', 'command')} failed"
+                           " (cost? fort nearby? valid target?)",
+            }))
         return player, room
 
     await websocket.send(encode({

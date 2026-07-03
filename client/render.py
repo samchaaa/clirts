@@ -1,7 +1,9 @@
 import os
 import sys
 
-from shared.messages import MAP_WIDTH, MAP_HEIGHT, UNIT_HP
+from shared.messages import MAP_WIDTH, MAP_HEIGHT, UNIT_STATS
+
+UNIT_CHARS = {"worker": "o", "tank": "T", "range": "r", "fort": "#"}
 
 PLAYER_COLORS = {
     1: "\033[94m",   # blue
@@ -53,11 +55,12 @@ class Renderer:
                 owner = unit["owner"]
                 is_selected = unit["id"] in selected_ids
                 c = PLAYER_COLORS.get(owner, RESET)
+                char = UNIT_CHARS.get(unit.get("type", "worker"), "o")
                 if is_selected:
-                    grid[uy][ux] = "@"
+                    grid[uy][ux] = "@" if char == "o" else char
                     color_grid[uy][ux] = c + BOLD
                 else:
-                    grid[uy][ux] = "o"
+                    grid[uy][ux] = char
                     color_grid[uy][ux] = c
 
         sidebar = self._build_sidebar(units, nodes, cursor_x, cursor_y, selected_ids)
@@ -94,7 +97,8 @@ class Renderer:
         sel_count = len(selected_ids)
         out.append(f" Selected: {sel_count}  Cursor: ({cursor_x},{cursor_y})\n")
 
-        out.append(f" {DIM}[WASD]cursor  [Space]select  [F]select area  [E]clear  [M]move  [X]attack  [G]gather  [B]build  [Q]quit{RESET}\n")
+        out.append(f" {DIM}[WASD]cursor [Space]select [F]area [E]clear [M]move [X]attack [G]gather [Q]quit{RESET}\n")
+        out.append(f" {DIM}build: [B]worker [T]tank [R]range [C]fort (tank/range need a fort nearby){RESET}\n")
 
         if winner is not None:
             if winner == self.player_id:
@@ -125,8 +129,9 @@ class Renderer:
             owner = unit["owner"]
             c = PLAYER_COLORS.get(owner, RESET)
             who = "you" if owner == self.player_id else f"enemy P{owner}"
-            lines.append(f"{c}Unit #{unit['id']} ({who}){RESET}")
-            lines.append(f"HP: {unit['hp']}/{UNIT_HP}")
+            utype = unit.get("type", "worker")
+            lines.append(f"{c}{utype.capitalize()} #{unit['id']} ({who}){RESET}")
+            lines.append(f"HP: {unit['hp']}/{UNIT_STATS[utype]['hp']}")
             lines.append(f"Pos: ({int(round(unit['x']))},{int(round(unit['y']))})")
         elif node:
             lines.append(f"{RESOURCE_COLOR}Resource node #{node['id']}{RESET}")
@@ -139,7 +144,9 @@ class Renderer:
         lines.append(f"{BOLD}── SELECTED ({len(selected)}) ──{RESET}")
         room = MAP_HEIGHT - len(lines) - 1
         for u in selected[:room]:
-            lines.append(f"#{u['id']}: {u['hp']}/{UNIT_HP} hp"
+            utype = u.get("type", "worker")
+            lines.append(f"#{u['id']} {utype}: "
+                         f"{u['hp']}/{UNIT_STATS[utype]['hp']} hp"
                          f"  ({int(round(u['x']))},{int(round(u['y']))})")
         if len(selected) > room:
             lines.append(f"{DIM}…+{len(selected) - room} more{RESET}")
