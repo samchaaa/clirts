@@ -57,9 +57,11 @@ UNIT_STATS = {
     "range":  {"hp": 80, "damage": 20, "range": 5.0, "speed": 1.0,
                "cost": 150, "auto_range": 5.0, "reload": 3},
     "fort":   {"hp": 500, "damage": 40, "range": 6.0, "speed": 0.0,
-               "cost": 400, "auto_range": 6.0, "reload": 3},
+               "cost": 400, "auto_range": 6.0, "reload": 3,
+               "build_time": 60},
     "wall":   {"hp": 200, "damage": 0, "range": 0.0, "speed": 0.0,
-               "cost": 50, "auto_range": 0.0, "reload": 1},
+               "cost": 35, "auto_range": 0.0, "reload": 1,
+               "build_time": 10},
 }
 BUILDINGS = ("fort", "wall")  # placed as a site; a worker walks there to build
 # tank/range must be built within this distance of a friendly fort

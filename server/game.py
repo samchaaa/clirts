@@ -210,7 +210,7 @@ class GameState:
             self.resources[player_id] -= cost
             self._cancel_build(worker)
             worker.build_task = {"type": unit_type, "x": tx, "y": ty,
-                                 "cost": cost}
+                                 "cost": cost, "progress": 0}
             worker.target = None
             worker.attack_target = None
             worker.gathering = False
@@ -307,12 +307,14 @@ class GameState:
             if unit.hp <= 0 or not task:
                 continue
             if _dist(unit.x, unit.y, task["x"], task["y"]) <= BUILD_RANGE:
-                uid = self.next_unit_id
-                self.next_unit_id += 1
-                self.units[uid] = Unit(id=uid, owner=unit.owner,
-                                       x=task["x"], y=task["y"],
-                                       type=task["type"])
-                unit.build_task = None
+                task["progress"] += 1
+                if task["progress"] >= UNIT_STATS[task["type"]]["build_time"]:
+                    uid = self.next_unit_id
+                    self.next_unit_id += 1
+                    self.units[uid] = Unit(id=uid, owner=unit.owner,
+                                           x=task["x"], y=task["y"],
+                                           type=task["type"])
+                    unit.build_task = None
 
     def _separate_units(self):
         units = [u for u in self.units.values() if u.hp > 0]
@@ -439,6 +441,13 @@ class GameState:
                 for n in self.resource_nodes.values()
             ],
             "shots": self.shots,
+            "sites": [
+                {"owner": u.owner, "type": t["type"],
+                 "x": t["x"], "y": t["y"], "progress": t["progress"],
+                 "total": UNIT_STATS[t["type"]]["build_time"]}
+                for u in self.units.values()
+                if (t := u.build_task) and u.hp > 0
+            ],
             "winner": self.winner,
         }
 

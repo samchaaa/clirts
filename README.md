@@ -80,12 +80,13 @@ colors identify players (blue/red/green/yellow by join order).
 | Tank | `T` | 250 | 300 | 30 | 1.5 | 0.4 | Slow, hits hard |
 | Range | `r` | 150 | 80 | 20 | 5 | 1.0 | Auto-fires in radius, every 3rd tick |
 | Fort | `#` | 400 | 500 | 40 | 6 | — | Building; auto-fires in radius, every 3rd tick |
-| Wall | `=` | 50 | 200 | — | — | — | Building; blocks all unit movement |
+| Wall | `=` | 35 | 200 | — | — | — | Building; blocks all unit movement |
 
 Buildings (fort, wall) are constructed on site: select a worker, put the
 cursor where you want the building, and press `C`/`V` — the worker walks
-there and builds it (cost refunded if the order is cancelled or the worker
-dies on the way). Tanks and ranges must be built within 4 tiles of one of
+there and builds it (forts take 6 s of construction, walls 1 s; the site
+shows as a dim glyph with progress in the sidebar). Cost is refunded if the
+order is cancelled or the worker dies on the way. Tanks and ranges must be built within 4 tiles of one of
 your forts.
 
 Fort and range shots draw projectile tracers. Auto-fire never chases and

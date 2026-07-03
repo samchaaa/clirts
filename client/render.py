@@ -38,6 +38,7 @@ class Renderer:
         units = snap.get("units", [])
         resources = snap.get("resources", {})
         nodes = snap.get("resource_nodes", [])
+        sites = snap.get("sites", [])
         tick = snap.get("tick", 0)
         winner = snap.get("winner")
 
@@ -47,6 +48,13 @@ class Renderer:
         # projectile tracers first, so units/nodes draw over them
         for shot in snap.get("shots", []):
             self._draw_shot(grid, color_grid, shot)
+
+        for site in sites:
+            sx, sy = int(round(site["x"])), int(round(site["y"]))
+            if 0 <= sx < MAP_WIDTH and 0 <= sy < MAP_HEIGHT:
+                grid[sy][sx] = UNIT_CHARS.get(site["type"], "?")
+                color_grid[sy][sx] = (
+                    PLAYER_COLORS.get(site["owner"], RESET) + DIM)
 
         for node in nodes:
             nx, ny = int(round(node["x"])), int(round(node["y"]))
@@ -68,7 +76,8 @@ class Renderer:
                     grid[uy][ux] = char
                     color_grid[uy][ux] = c
 
-        sidebar = self._build_sidebar(units, nodes, cursor_x, cursor_y, selected_ids)
+        sidebar = self._build_sidebar(units, nodes, sites,
+                                      cursor_x, cursor_y, selected_ids)
 
         out = []
         out.append("\033[H\033[2J")
@@ -139,7 +148,7 @@ class Renderer:
             grid[iy][ix] = "x"
             color_grid[iy][ix] = c
 
-    def _build_sidebar(self, units, nodes, cursor_x, cursor_y,
+    def _build_sidebar(self, units, nodes, sites, cursor_x, cursor_y,
                        selected_ids) -> list[str]:
         lines = [f"{BOLD}── CURSOR ──{RESET}"]
 
@@ -161,6 +170,15 @@ class Renderer:
         elif node:
             lines.append(f"{RESOURCE_COLOR}Resource node #{node['id']}{RESET}")
             lines.append(f"Amount: {node['amount']}")
+        elif site := next((s for s in sites
+                           if int(round(s["x"])) == cursor_x
+                           and int(round(s["y"])) == cursor_y), None):
+            owner = site["owner"]
+            c = PLAYER_COLORS.get(owner, RESET)
+            who = "you" if owner == self.player_id else f"enemy P{owner}"
+            pct = 100 * site["progress"] // site["total"]
+            lines.append(f"{c}{site['type'].capitalize()} site ({who}){RESET}")
+            lines.append(f"Progress: {pct}%")
         else:
             lines.append(f"{DIM}(nothing here){RESET}")
 
