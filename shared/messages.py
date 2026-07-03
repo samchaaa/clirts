@@ -58,9 +58,16 @@ UNIT_STATS = {
                "cost": 150, "auto_range": 5.0, "reload": 3},
     "fort":   {"hp": 500, "damage": 40, "range": 6.0, "speed": 0.0,
                "cost": 400, "auto_range": 6.0, "reload": 3},
+    "wall":   {"hp": 200, "damage": 0, "range": 0.0, "speed": 0.0,
+               "cost": 50, "auto_range": 0.0, "reload": 1},
 }
+BUILDINGS = ("fort", "wall")  # placed as a site; a worker walks there to build
 # tank/range must be built within this distance of a friendly fort
 FORT_BUILD_RADIUS = 4.0
+# how close a worker must be to a site to finish construction
+BUILD_RANGE = 1.5
+# units cannot move closer than this to a wall
+WALL_RADIUS = 0.9
 
 
 def encode(msg: dict) -> str:

@@ -58,7 +58,8 @@ Rooms hold up to 4 players. You start with 5 workers in a corner and
 | `M` | Move selected units to cursor |
 | `X` | Attack the enemy under the cursor |
 | `G` | Gather from the resource node (`$`) under the cursor |
-| `B` / `T` / `R` / `C` | Build worker / tank / range / fort at cursor |
+| `B` / `T` / `R` | Build worker / tank / range at cursor |
+| `C` / `V` | Order the selected worker to build a fort / wall at cursor |
 | `Q` | Quit |
 
 A sidebar right of the map shows details for whatever is under the cursor
@@ -68,14 +69,22 @@ A sidebar right of the map shows details for whatever is under the cursor
 
 | Type | Glyph | Cost | HP | Damage | Range | Speed | Notes |
 |---|---|---|---|---|---|---|---|
-| Worker | `o` | 100 | 100 | 10 | 2 | 1.0 | The only unit that can gather |
+| Worker | `o` | 100 | 100 | 10 | 2 | 1.0 | The only unit that can gather and build |
 | Tank | `T` | 250 | 300 | 30 | 1.5 | 0.4 | Slow, hits hard |
-| Range | `r` | 150 | 80 | 8 | 5 | 1.0 | Auto-fires at enemies in radius |
-| Fort | `#` | 400 | 500 | 15 | 6 | — | Immobile; auto-fires in radius |
+| Range | `r` | 150 | 80 | 20 | 5 | 1.0 | Auto-fires in radius, every 3rd tick |
+| Fort | `#` | 400 | 500 | 40 | 6 | — | Building; auto-fires in radius, every 3rd tick |
+| Wall | `=` | 50 | 200 | — | — | — | Building; blocks all unit movement |
 
-Tanks and ranges must be built within 4 tiles of one of your forts. Auto-fire
-never chases: forts and ranges shoot the nearest enemy in radius while
-otherwise following orders. Last player with units alive wins.
+Buildings (fort, wall) are constructed on site: select a worker, put the
+cursor where you want the building, and press `C`/`V` — the worker walks
+there and builds it (cost refunded if the order is cancelled or the worker
+dies on the way). Tanks and ranges must be built within 4 tiles of one of
+your forts.
+
+Fort and range shots draw projectile tracers. Auto-fire never chases and
+skips walls; shots pass over walls (no line-of-sight), so walls stop melee
+but not ranged fire. Break through enemy walls by attacking them with `X`.
+Last player with units alive wins.
 
 ## Repo layout
 

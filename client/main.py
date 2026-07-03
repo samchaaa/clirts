@@ -178,9 +178,8 @@ class GameClient:
                     self.renderer.status_message = f"Gathering from node {node['id']}"
                 else:
                     self.renderer.status_message = "No resource node at cursor"
-        elif k in ('b', 't', 'r', 'c'):
-            unit_type = {'b': 'worker', 't': 'tank',
-                         'r': 'range', 'c': 'fort'}[k]
+        elif k in ('b', 't', 'r'):
+            unit_type = {'b': 'worker', 't': 'tank', 'r': 'range'}[k]
             await self.net.send({
                 "type": "command",
                 "command": "build",
@@ -190,6 +189,23 @@ class GameClient:
             cost = UNIT_STATS[unit_type]["cost"]
             self.renderer.status_message = (
                 f"Building {unit_type} ({cost}) at ({self.cursor_x},{self.cursor_y})")
+        elif k in ('c', 'v'):
+            unit_type = {'c': 'fort', 'v': 'wall'}[k]
+            if not self.selected_ids:
+                self.renderer.status_message = (
+                    f"Select a worker to build the {unit_type}")
+            else:
+                await self.net.send({
+                    "type": "command",
+                    "command": "build",
+                    "unit_type": unit_type,
+                    "unit_ids": self.selected_ids,
+                    "target": [self.cursor_x, self.cursor_y],
+                })
+                cost = UNIT_STATS[unit_type]["cost"]
+                self.renderer.status_message = (
+                    f"Worker heading to build {unit_type} ({cost})"
+                    f" at ({self.cursor_x},{self.cursor_y})")
         elif k == 'e':
             self.selected_ids.clear()
             self.renderer.status_message = "Selection cleared"

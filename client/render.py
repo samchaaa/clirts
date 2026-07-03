@@ -3,7 +3,8 @@ import sys
 
 from shared.messages import MAP_WIDTH, MAP_HEIGHT, UNIT_STATS
 
-UNIT_CHARS = {"worker": "o", "tank": "T", "range": "r", "fort": "#"}
+UNIT_CHARS = {"worker": "o", "tank": "T", "range": "r",
+              "fort": "#", "wall": "="}
 
 PLAYER_COLORS = {
     1: "\033[94m",   # blue
@@ -102,7 +103,8 @@ class Renderer:
         out.append(f" Selected: {sel_count}  Cursor: ({cursor_x},{cursor_y})\n")
 
         out.append(f" {DIM}[WASD]cursor [Space]select [F]area [E]clear [M]move [X]attack [G]gather [Q]quit{RESET}\n")
-        out.append(f" {DIM}build: [B]worker [T]tank [R]range [C]fort (tank/range need a fort nearby){RESET}\n")
+        out.append(f" {DIM}build: [B]worker [T]tank [R]range [C]fort [V]wall"
+                   f" (fort/wall: selected worker builds; tank/range need a fort near){RESET}\n")
 
         if winner is not None:
             if winner == self.player_id:

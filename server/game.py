@@ -5,7 +5,8 @@ from dataclasses import dataclass, field
 from shared.messages import (
     MAP_WIDTH, MAP_HEIGHT,
     GATHER_RANGE, GATHER_RATE, STARTING_RESOURCES,
-    STARTING_UNITS, UNIT_STATS, FORT_BUILD_RADIUS, Command,
+    STARTING_UNITS, UNIT_STATS, FORT_BUILD_RADIUS,
+    BUILDINGS, BUILD_RANGE, WALL_RADIUS, Command,
 )
 
 # 1.5 guarantees distinct rendered cells even when a pair separates
@@ -26,6 +27,7 @@ class Unit:
     gathering: bool = False
     gather_target: int | None = None
     cooldown: int = 0
+    build_task: dict | None = None  # {"type", "x", "y", "cost"}
 
     def __post_init__(self):
         if self.hp is None:
@@ -137,8 +139,15 @@ class GameState:
                 unit.attack_target = None
                 unit.gathering = False
                 unit.gather_target = None
+                self._cancel_build(unit)
                 i += 1
         return True
+
+    def _cancel_build(self, unit: Unit):
+        if unit.build_task:
+            self.resources[unit.owner] = (
+                self.resources.get(unit.owner, 0) + unit.build_task["cost"])
+            unit.build_task = None
 
     def _cmd_attack(self, player_id: int, cmd: dict) -> bool:
         unit_ids = cmd.get("unit_ids", [])
@@ -155,6 +164,7 @@ class GameState:
                 unit.target = None
                 unit.gathering = False
                 unit.gather_target = None
+                self._cancel_build(unit)
         return True
 
     def _cmd_gather(self, player_id: int, cmd: dict) -> bool:
@@ -170,6 +180,7 @@ class GameState:
                 unit.gathering = True
                 unit.target = None
                 unit.attack_target = None
+                self._cancel_build(unit)
         return True
 
     def _cmd_build(self, player_id: int, cmd: dict) -> bool:
@@ -185,6 +196,26 @@ class GameState:
         cost = UNIT_STATS[unit_type]["cost"]
         if self.resources.get(player_id, 0) < cost:
             return False
+        if unit_type in BUILDINGS:
+            # buildings are constructed on site by a worker
+            worker = next(
+                (u for uid in cmd.get("unit_ids", [])
+                 if (u := self.units.get(uid))
+                 and u.owner == player_id and u.hp > 0
+                 and u.type == "worker"),
+                None,
+            )
+            if worker is None:
+                return False
+            self.resources[player_id] -= cost
+            self._cancel_build(worker)
+            worker.build_task = {"type": unit_type, "x": tx, "y": ty,
+                                 "cost": cost}
+            worker.target = None
+            worker.attack_target = None
+            worker.gathering = False
+            worker.gather_target = None
+            return True
         if unit_type in ("tank", "range"):
             near_fort = any(
                 u.type == "fort" and u.owner == player_id and u.hp > 0
@@ -205,12 +236,15 @@ class GameState:
         self.shots = []
         self._move_units()
         self._separate_units()
+        self._resolve_building()
         self._resolve_gathering()
         self._resolve_combat()
         self._cleanup_dead()
         self._check_victory()
 
     def _move_units(self):
+        walls = [u for u in self.units.values()
+                 if u.type == "wall" and u.hp > 0]
         for unit in self.units.values():
             if unit.hp <= 0 or unit.stats["speed"] <= 0:
                 continue
@@ -224,6 +258,10 @@ class GameState:
                         move_target = (target_unit.x, target_unit.y)
                 else:
                     unit.attack_target = None
+            elif unit.build_task:
+                site = (unit.build_task["x"], unit.build_task["y"])
+                if _dist(unit.x, unit.y, *site) > BUILD_RANGE:
+                    move_target = site
             elif unit.gathering and unit.gather_target is not None:
                 node = self.resource_nodes.get(unit.gather_target)
                 if node:
@@ -242,13 +280,39 @@ class GameState:
                 dist = math.sqrt(dx * dx + dy * dy)
                 if dist > 0.1:
                     step = min(unit.stats["speed"], dist)
-                    unit.x += (dx / dist) * step
-                    unit.y += (dy / dist) * step
-                    unit.x = max(0, min(MAP_WIDTH - 1, unit.x))
-                    unit.y = max(0, min(MAP_HEIGHT - 1, unit.y))
+                    nx = max(0, min(MAP_WIDTH - 1, unit.x + (dx / dist) * step))
+                    ny = max(0, min(MAP_HEIGHT - 1, unit.y + (dy / dist) * step))
+                    if not self._wall_blocked(unit, nx, ny, walls):
+                        unit.x, unit.y = nx, ny
                 else:
                     if unit.target == move_target:
                         unit.target = None
+
+    def _wall_blocked(self, unit: Unit, nx: float, ny: float,
+                      walls: list[Unit]) -> bool:
+        for wall in walls:
+            if wall is unit:
+                continue
+            d_new = _dist(wall.x, wall.y, nx, ny)
+            # blocked only when moving deeper into the wall's radius,
+            # so a unit that ends up inside can still walk out
+            if d_new < WALL_RADIUS and d_new < _dist(wall.x, wall.y,
+                                                     unit.x, unit.y):
+                return True
+        return False
+
+    def _resolve_building(self):
+        for unit in list(self.units.values()):
+            task = unit.build_task
+            if unit.hp <= 0 or not task:
+                continue
+            if _dist(unit.x, unit.y, task["x"], task["y"]) <= BUILD_RANGE:
+                uid = self.next_unit_id
+                self.next_unit_id += 1
+                self.units[uid] = Unit(id=uid, owner=unit.owner,
+                                       x=task["x"], y=task["y"],
+                                       type=task["type"])
+                unit.build_task = None
 
     def _separate_units(self):
         units = [u for u in self.units.values() if u.hp > 0]
@@ -332,7 +396,9 @@ class GameState:
             return
         best, best_dist = None, auto_range
         for other in self.units.values():
-            if other.owner == unit.owner or other.hp <= 0:
+            # never auto-target walls; they must be attacked deliberately
+            if other.owner == unit.owner or other.hp <= 0 \
+                    or other.type == "wall":
                 continue
             d = _dist(unit.x, unit.y, other.x, other.y)
             if d <= best_dist:
@@ -345,6 +411,7 @@ class GameState:
     def _cleanup_dead(self):
         dead = [uid for uid, u in self.units.items() if u.hp <= 0]
         for uid in dead:
+            self._cancel_build(self.units[uid])
             del self.units[uid]
 
     def _check_victory(self):
