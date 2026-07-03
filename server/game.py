@@ -30,7 +30,12 @@ class Unit:
     gathering: bool = False
     gather_target: int | None = None
     cooldown: int = 0
-    build_task: dict | None = None  # {"type", "x", "y", "cost"}
+    # FIFO of {"type", "x", "y", "cost", "progress"}; [0] is in progress
+    build_tasks: list[dict] = field(default_factory=list)
+
+    @property
+    def build_task(self) -> dict | None:
+        return self.build_tasks[0] if self.build_tasks else None
 
     def __post_init__(self):
         if self.hp is None:
@@ -146,11 +151,24 @@ class GameState:
                 i += 1
         return True
 
+    def _site_occupied(self, player_id: int, tx: float, ty: float) -> bool:
+        for u in self.units.values():
+            if u.hp <= 0:
+                continue
+            if (u.type in BUILDINGS
+                    and _dist(u.x, u.y, tx, ty) < WALL_RADIUS):
+                return True
+            if u.owner == player_id:
+                for task in u.build_tasks:
+                    if _dist(task["x"], task["y"], tx, ty) < WALL_RADIUS:
+                        return True
+        return False
+
     def _cancel_build(self, unit: Unit):
-        if unit.build_task:
+        for task in unit.build_tasks:
             self.resources[unit.owner] = (
-                self.resources.get(unit.owner, 0) + unit.build_task["cost"])
-            unit.build_task = None
+                self.resources.get(unit.owner, 0) + task["cost"])
+        unit.build_tasks.clear()
 
     def _cmd_attack(self, player_id: int, cmd: dict) -> bool:
         unit_ids = cmd.get("unit_ids", [])
@@ -210,10 +228,12 @@ class GameState:
             )
             if worker is None:
                 return False
+            if self._site_occupied(player_id, tx, ty):
+                return False
             self.resources[player_id] -= cost
-            self._cancel_build(worker)
-            worker.build_task = {"type": unit_type, "x": tx, "y": ty,
-                                 "cost": cost, "progress": 0}
+            # queue behind any in-progress builds
+            worker.build_tasks.append({"type": unit_type, "x": tx, "y": ty,
+                                       "cost": cost, "progress": 0})
             worker.target = None
             worker.attack_target = None
             worker.gathering = False
@@ -283,10 +303,27 @@ class GameState:
                 dist = math.sqrt(dx * dx + dy * dy)
                 if dist > 0.1:
                     step = min(unit.stats["speed"], dist)
-                    nx = max(0, min(MAP_WIDTH - 1, unit.x + (dx / dist) * step))
-                    ny = max(0, min(MAP_HEIGHT - 1, unit.y + (dy / dist) * step))
+                    ux, uy = dx / dist, dy / dist
+                    nx = max(0, min(MAP_WIDTH - 1, unit.x + ux * step))
+                    ny = max(0, min(MAP_HEIGHT - 1, unit.y + uy * step))
                     if not self._wall_blocked(unit, nx, ny, walls):
                         unit.x, unit.y = nx, ny
+                    else:
+                        # slide perpendicular along the wall, whichever
+                        # side ends up closer to the target
+                        best = None
+                        for px, py in ((-uy, ux), (uy, -ux)):
+                            sx = max(0, min(MAP_WIDTH - 1,
+                                            unit.x + px * step))
+                            sy = max(0, min(MAP_HEIGHT - 1,
+                                            unit.y + py * step))
+                            if self._wall_blocked(unit, sx, sy, walls):
+                                continue
+                            d = _dist(sx, sy, tx, ty)
+                            if best is None or d < best[0]:
+                                best = (d, sx, sy)
+                        if best:
+                            unit.x, unit.y = best[1], best[2]
                 else:
                     if unit.target == move_target:
                         unit.target = None
@@ -322,7 +359,7 @@ class GameState:
                     self.units[uid] = Unit(id=uid, owner=unit.owner,
                                            x=task["x"], y=task["y"],
                                            type=task["type"])
-                    unit.build_task = None
+                    unit.build_tasks.pop(0)
 
     def _separate_units(self):
         units = [u for u in self.units.values() if u.hp > 0]
@@ -457,8 +494,8 @@ class GameState:
                 {"owner": u.owner, "type": t["type"],
                  "x": t["x"], "y": t["y"], "progress": t["progress"],
                  "total": UNIT_STATS[t["type"]]["build_time"]}
-                for u in self.units.values()
-                if (t := u.build_task) and u.hp > 0
+                for u in self.units.values() if u.hp > 0
+                for t in u.build_tasks
             ],
             "winner": self.winner,
         }
