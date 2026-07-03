@@ -125,7 +125,15 @@ class GameClient:
             self.running = False
             return
 
-        if k == 'w':
+        if key == 'W':
+            self.cursor_y = 0
+        elif key == 'S':
+            self.cursor_y = MAP_HEIGHT - 1
+        elif key == 'A':
+            self.cursor_x = 0
+        elif key == 'D':
+            self.cursor_x = MAP_WIDTH - 1
+        elif k == 'w':
             self.cursor_y = max(0, self.cursor_y - 1)
         elif k == 's':
             self.cursor_y = min(MAP_HEIGHT - 1, self.cursor_y + 1)
