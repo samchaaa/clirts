@@ -12,6 +12,9 @@ from shared.messages import (
 # 1.5 guarantees distinct rendered cells even when a pair separates
 # diagonally (axis component 1.5/sqrt(2) > 1 cell)
 MIN_SEPARATION = 1.5
+# a builder ignores blocking/separation from structures this close to its
+# site, so it can finish walls adjacent to existing buildings
+BUILDER_CLEARANCE = 3.0
 
 
 @dataclass
@@ -288,10 +291,15 @@ class GameState:
                     if unit.target == move_target:
                         unit.target = None
 
+    def _builder_exempt(self, unit: Unit, structure: Unit) -> bool:
+        task = unit.build_task
+        return bool(task) and _dist(task["x"], task["y"],
+                                    structure.x, structure.y) <= BUILDER_CLEARANCE
+
     def _wall_blocked(self, unit: Unit, nx: float, ny: float,
                       walls: list[Unit]) -> bool:
         for wall in walls:
-            if wall is unit:
+            if wall is unit or self._builder_exempt(unit, wall):
                 continue
             d_new = _dist(wall.x, wall.y, nx, ny)
             # blocked only when moving deeper into the wall's radius,
@@ -335,6 +343,10 @@ class GameState:
                 a_fixed = a.stats["speed"] <= 0
                 b_fixed = b.stats["speed"] <= 0
                 if a_fixed and b_fixed:
+                    continue
+                # don't shove a builder away from structures at its site
+                if (a_fixed and self._builder_exempt(b, a)) or \
+                        (b_fixed and self._builder_exempt(a, b)):
                     continue
                 a_push = 0 if a_fixed else (push * 2 if b_fixed else push)
                 b_push = 0 if b_fixed else (push * 2 if a_fixed else push)
