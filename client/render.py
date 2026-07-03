@@ -124,7 +124,7 @@ class Renderer:
         dx, dy = tx - fx, ty - fy
         steps = max(1, int(round(max(abs(dx), abs(dy)))))
         c = PLAYER_COLORS.get(shot.get("owner"), RESET)
-        for i in range(1, steps):
+        for i in range(1, steps, 2):
             x = int(round(fx + dx * i / steps))
             y = int(round(fy + dy * i / steps))
             if 0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT:

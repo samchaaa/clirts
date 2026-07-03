@@ -25,6 +25,7 @@ class Unit:
     attack_target: int | None = None
     gathering: bool = False
     gather_target: int | None = None
+    cooldown: int = 0
 
     def __post_init__(self):
         if self.hp is None:
@@ -299,6 +300,9 @@ class GameState:
         for unit in self.units.values():
             if unit.hp <= 0:
                 continue
+            if unit.cooldown > 0:
+                unit.cooldown -= 1
+                continue
             if unit.attack_target is None:
                 # stateless auto-fire: shoot but never chase or
                 # override move orders
@@ -311,6 +315,7 @@ class GameState:
             dist = _dist(unit.x, unit.y, target.x, target.y)
             if dist <= unit.stats["range"]:
                 target.hp -= unit.stats["damage"]
+                unit.cooldown = unit.stats["reload"] - 1
                 self._record_shot(unit, target)
 
     def _record_shot(self, unit: Unit, target: Unit):
@@ -334,6 +339,7 @@ class GameState:
                 best, best_dist = other, d
         if best:
             best.hp -= unit.stats["damage"]
+            unit.cooldown = unit.stats["reload"] - 1
             self._record_shot(unit, best)
 
     def _cleanup_dead(self):

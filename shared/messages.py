@@ -47,16 +47,17 @@ HEARTBEAT_TIMEOUT = 30
 WORKER_COST = 100
 
 # hp/damage/attack range/speed/cost per unit type; auto_range > 0 means the
-# unit fires at the nearest enemy in radius without needing an attack order
+# unit fires at the nearest enemy in radius without needing an attack order;
+# reload is the number of ticks between shots
 UNIT_STATS = {
     "worker": {"hp": 100, "damage": 10, "range": 2.0, "speed": 1.0,
-               "cost": 100, "auto_range": 0.0},
+               "cost": 100, "auto_range": 0.0, "reload": 1},
     "tank":   {"hp": 300, "damage": 30, "range": 1.5, "speed": 0.4,
-               "cost": 250, "auto_range": 0.0},
-    "range":  {"hp": 80, "damage": 8, "range": 5.0, "speed": 1.0,
-               "cost": 150, "auto_range": 5.0},
-    "fort":   {"hp": 500, "damage": 15, "range": 6.0, "speed": 0.0,
-               "cost": 400, "auto_range": 6.0},
+               "cost": 250, "auto_range": 0.0, "reload": 1},
+    "range":  {"hp": 80, "damage": 20, "range": 5.0, "speed": 1.0,
+               "cost": 150, "auto_range": 5.0, "reload": 3},
+    "fort":   {"hp": 500, "damage": 40, "range": 6.0, "speed": 0.0,
+               "cost": 400, "auto_range": 6.0, "reload": 3},
 }
 # tank/range must be built within this distance of a friendly fort
 FORT_BUILD_RADIUS = 4.0
