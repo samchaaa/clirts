@@ -1,7 +1,7 @@
 import os
 import sys
 
-from shared.messages import MAP_WIDTH, MAP_HEIGHT
+from shared.messages import MAP_WIDTH, MAP_HEIGHT, UNIT_HP
 
 PLAYER_COLORS = {
     1: "\033[94m",   # blue
@@ -60,6 +60,8 @@ class Renderer:
                     grid[uy][ux] = "o"
                     color_grid[uy][ux] = c
 
+        sidebar = self._build_sidebar(units, nodes, cursor_x, cursor_y, selected_ids)
+
         out = []
         out.append("\033[H\033[2J")
 
@@ -78,7 +80,10 @@ class Renderer:
                         out.append(f"{c}{grid[y][x]}{RESET}")
                     else:
                         out.append(grid[y][x])
-            out.append(f"{DIM}│{RESET}\n")
+            out.append(f"{DIM}│{RESET}")
+            if y < len(sidebar):
+                out.append(f"  {sidebar[y]}")
+            out.append("\n")
         out.append(f"{DIM}{'─' * (MAP_WIDTH + 2)}{RESET}\n")
 
         my_res = resources.get(str(self.player_id), 0)
@@ -104,6 +109,41 @@ class Renderer:
 
         sys.stdout.write("".join(out))
         sys.stdout.flush()
+
+    def _build_sidebar(self, units, nodes, cursor_x, cursor_y,
+                       selected_ids) -> list[str]:
+        lines = [f"{BOLD}── CURSOR ──{RESET}"]
+
+        unit = next((u for u in units
+                     if int(round(u["x"])) == cursor_x
+                     and int(round(u["y"])) == cursor_y), None)
+        node = next((n for n in nodes
+                     if int(round(n["x"])) == cursor_x
+                     and int(round(n["y"])) == cursor_y), None)
+
+        if unit:
+            owner = unit["owner"]
+            c = PLAYER_COLORS.get(owner, RESET)
+            who = "you" if owner == self.player_id else f"enemy P{owner}"
+            lines.append(f"{c}Unit #{unit['id']} ({who}){RESET}")
+            lines.append(f"HP: {unit['hp']}/{UNIT_HP}")
+            lines.append(f"Pos: ({int(round(unit['x']))},{int(round(unit['y']))})")
+        elif node:
+            lines.append(f"{RESOURCE_COLOR}Resource node #{node['id']}{RESET}")
+            lines.append(f"Amount: {node['amount']}")
+        else:
+            lines.append(f"{DIM}(nothing here){RESET}")
+
+        selected = [u for u in units if u["id"] in selected_ids]
+        lines.append("")
+        lines.append(f"{BOLD}── SELECTED ({len(selected)}) ──{RESET}")
+        room = MAP_HEIGHT - len(lines) - 1
+        for u in selected[:room]:
+            lines.append(f"#{u['id']}: {u['hp']}/{UNIT_HP} hp"
+                         f"  ({int(round(u['x']))},{int(round(u['y']))})")
+        if len(selected) > room:
+            lines.append(f"{DIM}…+{len(selected) - room} more{RESET}")
+        return lines[:MAP_HEIGHT]
 
     def _draw_lobby(self):
         out = []
