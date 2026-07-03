@@ -23,6 +23,9 @@ Requires Python 3.12+ and `pip install -r requirements.txt` (just `websockets`).
 python -m client.main --server wss://cli-rts.fly.dev/play --name sam
 ```
 
+> The public server runs whatever was last deployed from `main` — client and
+> server must be on matching versions for new unit types to work.
+
 **Run everything locally:**
 
 ```bash
@@ -64,6 +67,10 @@ Rooms hold up to 4 players. You start with 5 workers in a corner and
 
 A sidebar right of the map shows details for whatever is under the cursor
 (unit HP, node amount) and a breakdown of your current selection.
+
+**Map legend:** `o` worker · `T` tank · `r` range · `#` fort · `=` wall ·
+`$` resource node · `@`/bold = selected · `* x` projectile tracer + impact ·
+colors identify players (blue/red/green/yellow by join order).
 
 ## Units and buildings
 
