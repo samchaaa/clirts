@@ -13,6 +13,8 @@ PLAYER_COLORS = {
     4: "\033[93m",   # yellow
 }
 RESOURCE_COLOR = "\033[33m"
+LAKE_COLOR = "\033[34m"
+MOUNTAIN_COLOR = "\033[90m"
 RESET = "\033[0m"
 DIM = "\033[2m"
 BOLD = "\033[1m"
@@ -25,9 +27,15 @@ class Renderer:
         self.status_message = ""
         self.room_name = ""
         self.latency_ms = 0
+        self.lakes: set[tuple[int, int]] = set()
+        self.mountains: set[tuple[int, int]] = set()
 
     def set_snapshot(self, snapshot: dict):
         self.last_snapshot = snapshot
+
+    def set_terrain(self, terrain: dict):
+        self.lakes = {tuple(c) for c in terrain.get("lakes", [])}
+        self.mountains = {tuple(c) for c in terrain.get("mountains", [])}
 
     def draw(self, cursor_x: int, cursor_y: int, selected_ids: list[int]):
         if self.last_snapshot is None:
@@ -45,7 +53,17 @@ class Renderer:
         grid = [[" " for _ in range(MAP_WIDTH)] for _ in range(MAP_HEIGHT)]
         color_grid = [["" for _ in range(MAP_WIDTH)] for _ in range(MAP_HEIGHT)]
 
-        # projectile tracers first, so units/nodes draw over them
+        # terrain first: everything else draws over it
+        for x, y in self.lakes:
+            if 0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT:
+                grid[y][x] = "~"
+                color_grid[y][x] = LAKE_COLOR
+        for x, y in self.mountains:
+            if 0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT:
+                grid[y][x] = "^"
+                color_grid[y][x] = MOUNTAIN_COLOR
+
+        # projectile tracers, so units/nodes draw over them
         for shot in snap.get("shots", []):
             self._draw_shot(grid, color_grid, shot)
 
@@ -159,6 +177,13 @@ class Renderer:
                      if int(round(n["x"])) == cursor_x
                      and int(round(n["y"])) == cursor_y), None)
 
+        terrain = None
+        if (cursor_x, cursor_y) in self.lakes:
+            terrain = f"{LAKE_COLOR}Lake — impassable{RESET}"
+        elif (cursor_x, cursor_y) in self.mountains:
+            terrain = (f"{MOUNTAIN_COLOR}Mountain — 2x sight & fire rate,"
+                       f" 1/2 speed{RESET}")
+
         if unit:
             owner = unit["owner"]
             c = PLAYER_COLORS.get(owner, RESET)
@@ -179,8 +204,12 @@ class Renderer:
             pct = 100 * site["progress"] // site["total"]
             lines.append(f"{c}{site['type'].capitalize()} site ({who}){RESET}")
             lines.append(f"Progress: {pct}%")
+        elif terrain:
+            lines.append(terrain)
         else:
             lines.append(f"{DIM}(nothing here){RESET}")
+        if (unit or node) and terrain:
+            lines.append(terrain)
 
         selected = [u for u in units if u["id"] in selected_ids]
         lines.append("")

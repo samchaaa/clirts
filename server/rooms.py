@@ -23,6 +23,7 @@ class GameRoom:
         self.state = GameState()
         self.next_player_id = 1
         self._task: asyncio.Task | None = None
+        self.state.generate_terrain()
         self.state.spawn_resource_nodes()
 
     def add_player(self, name: str, websocket) -> Player | None:

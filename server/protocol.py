@@ -65,6 +65,7 @@ async def handle_message(
             "type": MsgType.ROOM_JOINED,
             "room": room_name,
             "player_id": new_player.id,
+            "terrain": new_room.state.terrain_msg(),
         }))
         return new_player, new_room
 
@@ -90,6 +91,7 @@ async def handle_message(
             "type": MsgType.ROOM_JOINED,
             "room": room_name,
             "player_id": new_player.id,
+            "terrain": target_room.state.terrain_msg(),
         }))
         return new_player, target_room
 

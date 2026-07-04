@@ -7,6 +7,9 @@ from shared.messages import (
     GATHER_RANGE, GATHER_RATE, STARTING_RESOURCES,
     STARTING_UNITS, UNIT_STATS, FORT_BUILD_RADIUS,
     BUILDINGS, BUILD_RANGE, WALL_RADIUS, Command,
+    LAKE_COUNT, LAKE_SIZE, MOUNTAIN_COUNT, MOUNTAIN_SIZE,
+    SPAWN_CLEAR_RADIUS, MOUNTAIN_SPEED_FACTOR,
+    MOUNTAIN_RANGE_FACTOR, MOUNTAIN_ROF_FACTOR,
 )
 
 # 1.5 guarantees distinct rendered cells even when a pair separates
@@ -29,7 +32,8 @@ class Unit:
     attack_target: int | None = None
     gathering: bool = False
     gather_target: int | None = None
-    cooldown: int = 0
+    # fractional so mountain units can fire at exactly 2x rate
+    cooldown: float = 0.0
     # FIFO of {"type", "x", "y", "cost", "progress"}; [0] is in progress
     build_tasks: list[dict] = field(default_factory=list)
 
@@ -66,17 +70,23 @@ class GameState:
     shots: list[dict] = field(default_factory=list)
     started: bool = False
     winner: int | None = None
+    lakes: set[tuple[int, int]] = field(default_factory=set)
+    mountains: set[tuple[int, int]] = field(default_factory=set)
 
-    def add_player(self, player_id: int):
-        self.players.add(player_id)
-        self.resources[player_id] = STARTING_RESOURCES
-
-        corners = [
+    @staticmethod
+    def _spawn_corners() -> list[tuple[int, int]]:
+        return [
             (5, 5),
             (MAP_WIDTH - 6, MAP_HEIGHT - 6),
             (5, MAP_HEIGHT - 6),
             (MAP_WIDTH - 6, 5),
         ]
+
+    def add_player(self, player_id: int):
+        self.players.add(player_id)
+        self.resources[player_id] = STARTING_RESOURCES
+
+        corners = self._spawn_corners()
         idx = (len(self.players) - 1) % len(corners)
         cx, cy = corners[idx]
 
@@ -95,6 +105,61 @@ class GameState:
         for uid in dead:
             del self.units[uid]
 
+    def generate_terrain(self, rng: random.Random | None = None):
+        """Grow random lake and mountain blobs, keeping spawn corners clear."""
+        rng = rng or random
+        corners = self._spawn_corners()
+
+        def clear_of_spawns(x: int, y: int) -> bool:
+            return all(_dist(x, y, cx, cy) > SPAWN_CLEAR_RADIUS
+                       for cx, cy in corners)
+
+        def grow_blobs(count, size_range, occupied) -> set:
+            cells: set[tuple[int, int]] = set()
+            for _ in range(count):
+                target = rng.randint(*size_range)
+                for _ in range(100):
+                    sx = rng.randrange(MAP_WIDTH)
+                    sy = rng.randrange(MAP_HEIGHT)
+                    if (clear_of_spawns(sx, sy)
+                            and (sx, sy) not in occupied
+                            and (sx, sy) not in cells):
+                        break
+                else:
+                    continue
+                blob = {(sx, sy)}
+                tries = 0
+                while len(blob) < target and tries < target * 20:
+                    tries += 1
+                    x, y = rng.choice(tuple(blob))
+                    nx = x + rng.choice((-1, 0, 1))
+                    ny = y + rng.choice((-1, 0, 1))
+                    if (0 <= nx < MAP_WIDTH and 0 <= ny < MAP_HEIGHT
+                            and clear_of_spawns(nx, ny)
+                            and (nx, ny) not in occupied):
+                        blob.add((nx, ny))
+                cells |= blob
+            return cells
+
+        self.lakes = grow_blobs(LAKE_COUNT, LAKE_SIZE, set())
+        self.mountains = grow_blobs(MOUNTAIN_COUNT, MOUNTAIN_SIZE, self.lakes)
+
+    def terrain_msg(self) -> dict:
+        return {"lakes": sorted(self.lakes),
+                "mountains": sorted(self.mountains)}
+
+    def _nearest_dry(self, x: int, y: int) -> tuple[int, int]:
+        if (x, y) not in self.lakes:
+            return x, y
+        for r in range(1, max(MAP_WIDTH, MAP_HEIGHT)):
+            for dy in range(-r, r + 1):
+                for dx in range(-r, r + 1):
+                    nx, ny = x + dx, y + dy
+                    if (0 <= nx < MAP_WIDTH and 0 <= ny < MAP_HEIGHT
+                            and (nx, ny) not in self.lakes):
+                        return nx, ny
+        return x, y
+
     def spawn_resource_nodes(self):
         positions = [
             (MAP_WIDTH // 2, MAP_HEIGHT // 2),
@@ -102,11 +167,42 @@ class GameState:
             (3 * MAP_WIDTH // 4, MAP_HEIGHT // 4),
             (MAP_WIDTH // 4, 3 * MAP_HEIGHT // 4),
             (3 * MAP_WIDTH // 4, 3 * MAP_HEIGHT // 4),
+            (MAP_WIDTH // 2, MAP_HEIGHT // 4),
+            (MAP_WIDTH // 2, 3 * MAP_HEIGHT // 4),
+            (MAP_WIDTH // 4, MAP_HEIGHT // 2),
+            (3 * MAP_WIDTH // 4, MAP_HEIGHT // 2),
         ]
         for x, y in positions:
+            x, y = self._nearest_dry(x, y)
             nid = self.next_node_id
             self.next_node_id += 1
             self.resource_nodes[nid] = ResourceNode(id=nid, x=x, y=y)
+
+    # --- terrain effects ---------------------------------------------------
+
+    def _is_lake(self, x: float, y: float) -> bool:
+        return (int(round(x)), int(round(y))) in self.lakes
+
+    def _on_mountain(self, unit: Unit) -> bool:
+        return (int(round(unit.x)), int(round(unit.y))) in self.mountains
+
+    def _eff_speed(self, unit: Unit) -> float:
+        speed = unit.stats["speed"]
+        return speed * MOUNTAIN_SPEED_FACTOR if self._on_mountain(unit) else speed
+
+    def _eff_range(self, unit: Unit) -> float:
+        rng = unit.stats["range"]
+        return rng * MOUNTAIN_RANGE_FACTOR if self._on_mountain(unit) else rng
+
+    def _eff_auto_range(self, unit: Unit) -> float:
+        rng = unit.stats["auto_range"]
+        return rng * MOUNTAIN_RANGE_FACTOR if self._on_mountain(unit) else rng
+
+    def _eff_reload(self, unit: Unit) -> float:
+        reload = unit.stats["reload"]
+        if self._on_mountain(unit):
+            return max(1.0, reload / MOUNTAIN_ROF_FACTOR)
+        return float(reload)
 
     def apply_command(self, player_id: int, cmd: dict) -> bool:
         action = cmd.get("command")
@@ -128,6 +224,8 @@ class GameState:
         tx, ty = float(target[0]), float(target[1])
         if not (0 <= tx < MAP_WIDTH and 0 <= ty < MAP_HEIGHT):
             return False
+        if self._is_lake(tx, ty):
+            return False
         movable = [uid for uid in unit_ids
                    if (u := self.units.get(uid))
                    and u.stats["speed"] > 0]
@@ -140,10 +238,11 @@ class GameState:
                 side = max(1, math.ceil(math.sqrt(len(movable))))
                 ox = (i % side - (side - 1) / 2) * MIN_SEPARATION
                 oy = (i // side - (side - 1) / 2) * MIN_SEPARATION
-                unit.target = (
-                    max(0, min(MAP_WIDTH - 1, tx + ox)),
-                    max(0, min(MAP_HEIGHT - 1, ty + oy)),
-                )
+                fx = max(0, min(MAP_WIDTH - 1, tx + ox))
+                fy = max(0, min(MAP_HEIGHT - 1, ty + oy))
+                if self._is_lake(fx, fy):
+                    fx, fy = tx, ty
+                unit.target = (fx, fy)
                 unit.attack_target = None
                 unit.gathering = False
                 unit.gather_target = None
@@ -214,6 +313,8 @@ class GameState:
         tx, ty = float(target[0]), float(target[1])
         if not (0 <= tx < MAP_WIDTH and 0 <= ty < MAP_HEIGHT):
             return False
+        if self._is_lake(tx, ty):
+            return False
         cost = UNIT_STATS[unit_type]["cost"]
         if self.resources.get(player_id, 0) < cost:
             return False
@@ -277,7 +378,7 @@ class GameState:
                 target_unit = self.units.get(unit.attack_target)
                 if target_unit and target_unit.hp > 0:
                     dist = _dist(unit.x, unit.y, target_unit.x, target_unit.y)
-                    if dist > unit.stats["range"]:
+                    if dist > self._eff_range(unit):
                         move_target = (target_unit.x, target_unit.y)
                 else:
                     unit.attack_target = None
@@ -302,14 +403,14 @@ class GameState:
                 dx, dy = tx - unit.x, ty - unit.y
                 dist = math.sqrt(dx * dx + dy * dy)
                 if dist > 0.1:
-                    step = min(unit.stats["speed"], dist)
+                    step = min(self._eff_speed(unit), dist)
                     ux, uy = dx / dist, dy / dist
                     nx = max(0, min(MAP_WIDTH - 1, unit.x + ux * step))
                     ny = max(0, min(MAP_HEIGHT - 1, unit.y + uy * step))
-                    if not self._wall_blocked(unit, nx, ny, walls):
+                    if not self._blocked(unit, nx, ny, walls):
                         unit.x, unit.y = nx, ny
                     else:
-                        # slide perpendicular along the wall, whichever
+                        # slide perpendicular along the obstacle, whichever
                         # side ends up closer to the target
                         best = None
                         for px, py in ((-uy, ux), (uy, -ux)):
@@ -317,7 +418,7 @@ class GameState:
                                             unit.x + px * step))
                             sy = max(0, min(MAP_HEIGHT - 1,
                                             unit.y + py * step))
-                            if self._wall_blocked(unit, sx, sy, walls):
+                            if self._blocked(unit, sx, sy, walls):
                                 continue
                             d = _dist(sx, sy, tx, ty)
                             if best is None or d < best[0]:
@@ -332,6 +433,13 @@ class GameState:
         task = unit.build_task
         return bool(task) and _dist(task["x"], task["y"],
                                     structure.x, structure.y) <= BUILDER_CLEARANCE
+
+    def _blocked(self, unit: Unit, nx: float, ny: float,
+                 walls: list[Unit]) -> bool:
+        # lakes are impassable (unless already in one, so units can escape)
+        if self._is_lake(nx, ny) and not self._is_lake(unit.x, unit.y):
+            return True
+        return self._wall_blocked(unit, nx, ny, walls)
 
     def _wall_blocked(self, unit: Unit, nx: float, ny: float,
                       walls: list[Unit]) -> bool:
@@ -387,10 +495,14 @@ class GameState:
                     continue
                 a_push = 0 if a_fixed else (push * 2 if b_fixed else push)
                 b_push = 0 if b_fixed else (push * 2 if a_fixed else push)
-                a.x = max(0, min(MAP_WIDTH - 1, a.x - nx * a_push))
-                a.y = max(0, min(MAP_HEIGHT - 1, a.y - ny * a_push))
-                b.x = max(0, min(MAP_WIDTH - 1, b.x + nx * b_push))
-                b.y = max(0, min(MAP_HEIGHT - 1, b.y + ny * b_push))
+                ax = max(0, min(MAP_WIDTH - 1, a.x - nx * a_push))
+                ay = max(0, min(MAP_HEIGHT - 1, a.y - ny * a_push))
+                if not self._is_lake(ax, ay):
+                    a.x, a.y = ax, ay
+                bx = max(0, min(MAP_WIDTH - 1, b.x + nx * b_push))
+                by = max(0, min(MAP_HEIGHT - 1, b.y + ny * b_push))
+                if not self._is_lake(bx, by):
+                    b.x, b.y = bx, by
 
     def _resolve_gathering(self):
         for unit in self.units.values():
@@ -415,7 +527,7 @@ class GameState:
         for unit in self.units.values():
             if unit.hp <= 0:
                 continue
-            if unit.cooldown > 0:
+            if unit.cooldown >= 1:
                 unit.cooldown -= 1
                 continue
             if unit.attack_target is None:
@@ -428,9 +540,11 @@ class GameState:
                 unit.attack_target = None
                 continue
             dist = _dist(unit.x, unit.y, target.x, target.y)
-            if dist <= unit.stats["range"]:
+            if dist <= self._eff_range(unit):
                 target.hp -= unit.stats["damage"]
-                unit.cooldown = unit.stats["reload"] - 1
+                # accumulate the fractional remainder so a 1.5-tick reload
+                # really fires 2 times every 3 ticks
+                unit.cooldown += self._eff_reload(unit) - 1
                 self._record_shot(unit, target)
 
     def _record_shot(self, unit: Unit, target: Unit):
@@ -442,7 +556,7 @@ class GameState:
             })
 
     def _auto_fire(self, unit: Unit):
-        auto_range = unit.stats["auto_range"]
+        auto_range = self._eff_auto_range(unit)
         if auto_range <= 0:
             return
         best, best_dist = None, auto_range
@@ -456,7 +570,7 @@ class GameState:
                 best, best_dist = other, d
         if best:
             best.hp -= unit.stats["damage"]
-            unit.cooldown = unit.stats["reload"] - 1
+            unit.cooldown += self._eff_reload(unit) - 1
             self._record_shot(unit, best)
 
     def _cleanup_dead(self):

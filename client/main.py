@@ -35,6 +35,7 @@ class GameClient:
             self.player_id = msg["player_id"]
             self.renderer.player_id = self.player_id
             self.renderer.room_name = msg.get("room", "")
+            self.renderer.set_terrain(msg.get("terrain") or {})
             self.renderer.status_message = ""
             self.in_lobby = False
         elif t == "room_created":

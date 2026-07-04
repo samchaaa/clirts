@@ -28,8 +28,8 @@ class Command(str, Enum):
     BUILD = "build"
 
 
-MAP_WIDTH = 60
-MAP_HEIGHT = 20
+MAP_WIDTH = 120
+MAP_HEIGHT = 40
 TICK_RATE = 10
 UNIT_SPEED = 1.0
 UNIT_HP = 100
@@ -70,6 +70,18 @@ FORT_BUILD_RADIUS = 4.0
 BUILD_RANGE = 1.5
 # units cannot move closer than this to a wall
 WALL_RADIUS = 0.9
+
+# --- terrain ---------------------------------------------------------------
+# random blobs generated per room; spawn corners are kept clear
+LAKE_COUNT = 6
+LAKE_SIZE = (20, 60)        # cells per lake (min, max)
+MOUNTAIN_COUNT = 5
+MOUNTAIN_SIZE = (30, 80)    # cells per range (min, max)
+SPAWN_CLEAR_RADIUS = 12.0   # no terrain this close to a spawn corner
+# mountains: half speed, but double sight/shot range and double fire rate
+MOUNTAIN_SPEED_FACTOR = 0.5
+MOUNTAIN_RANGE_FACTOR = 2.0
+MOUNTAIN_ROF_FACTOR = 2.0
 
 
 def encode(msg: dict) -> str:
