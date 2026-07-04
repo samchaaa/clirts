@@ -47,7 +47,8 @@ python -m client.main --name rival
 | `/quit` | Exit |
 
 Rooms hold up to 4 players. You start with 5 workers in a corner and
-500 resources.
+500 resources. The 120x40 map is generated per room with random terrain
+(spawn corners are always clear).
 
 ## In-game controls
 
@@ -69,8 +70,17 @@ A sidebar right of the map shows details for whatever is under the cursor
 (unit HP, node amount) and a breakdown of your current selection.
 
 **Map legend:** `o` worker · `T` tank · `r` range · `#` fort · `=` wall ·
-`$` resource node · `@`/bold = selected · `* x` projectile tracer + impact ·
-colors identify players (blue/red/green/yellow by join order).
+`$` resource node · `~` lake · `^` mountain · `@`/bold = selected ·
+`* x` projectile tracer + impact · colors identify players
+(blue/red/green/yellow by join order).
+
+## Terrain
+
+- **Lakes** (`~`) are impassable: move/build orders onto them are rejected
+  and units path around the shore.
+- **Mountains** (`^`) slow units to half speed, but double their sight and
+  shot range and double their rate of fire while standing on them. You can
+  build on mountains — a fort on a peak shoots at range 12, every 2.5 ticks.
 
 ## Units and buildings
 
