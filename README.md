@@ -79,7 +79,7 @@ colors identify players (blue/red/green/yellow by join order).
 | Worker | `o` | 100 | 100 | 10 | 2 | 1.0 | The only unit that can gather and build |
 | Tank | `T` | 250 | 300 | 30 | 1.5 | 0.4 | Slow, hits hard |
 | Range | `r` | 150 | 80 | 20 | 5 | 1.0 | Auto-fires in radius, every 3rd tick |
-| Fort | `#` | 400 | 500 | 40 | 6 | — | Building; auto-fires in radius, every 3rd tick |
+| Fort | `#` | 400 | 500 | 25 | 6 | — | Building; auto-fires in radius, every 5th tick |
 | Wall | `=` | 35 | 200 | — | — | — | Building; blocks all unit movement |
 
 Buildings (fort, wall) are constructed on site: select a worker, put the
