@@ -12,6 +12,13 @@ PLAYER_COLORS = {
     3: "\033[92m",   # green
     4: "\033[93m",   # yellow
 }
+# selected units: same glyph, black on the player's color
+PLAYER_HIGHLIGHT = {
+    1: "\033[30;104m",
+    2: "\033[30;101m",
+    3: "\033[30;102m",
+    4: "\033[30;103m",
+}
 RESOURCE_COLOR = "\033[33m"
 LAKE_COLOR = "\033[34m"
 MOUNTAIN_COLOR = "\033[90m"
@@ -87,11 +94,10 @@ class Renderer:
                 is_selected = unit["id"] in selected_ids
                 c = PLAYER_COLORS.get(owner, RESET)
                 char = UNIT_CHARS.get(unit.get("type", "worker"), "o")
+                grid[uy][ux] = char
                 if is_selected:
-                    grid[uy][ux] = "@" if char == "o" else char
-                    color_grid[uy][ux] = c + BOLD
+                    color_grid[uy][ux] = PLAYER_HIGHLIGHT.get(owner, "\033[7m")
                 else:
-                    grid[uy][ux] = char
                     color_grid[uy][ux] = c
 
         sidebar = self._build_sidebar(units, nodes, sites,

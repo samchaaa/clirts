@@ -70,9 +70,9 @@ A sidebar right of the map shows details for whatever is under the cursor
 (unit HP, node amount) and a breakdown of your current selection.
 
 **Map legend:** `o` worker · `T` tank · `r` range · `#` fort · `=` wall ·
-`$` resource node · `~` lake · `^` mountain · `@`/bold = selected ·
-`* x` projectile tracer + impact · colors identify players
-(blue/red/green/yellow by join order).
+`$` resource node · `~` lake · `^` mountain · highlighted (black on your
+color) = selected · `* x` projectile tracer + impact · colors identify
+players (blue/red/green/yellow by join order).
 
 ## Terrain
 
