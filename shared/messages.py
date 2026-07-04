@@ -55,7 +55,7 @@ UNIT_STATS = {
     "tank":   {"hp": 300, "damage": 30, "range": 1.5, "speed": 0.4,
                "cost": 250, "auto_range": 0.0, "reload": 1},
     "range":  {"hp": 80, "damage": 20, "range": 5.0, "speed": 1.0,
-               "cost": 150, "auto_range": 5.0, "reload": 3},
+               "cost": 150, "auto_range": 5.0, "reload": 3.75},
     "fort":   {"hp": 500, "damage": 25, "range": 6.0, "speed": 0.0,
                "cost": 400, "auto_range": 6.0, "reload": 5,
                "build_time": 60},
@@ -78,8 +78,8 @@ LAKE_SIZE = (20, 60)        # cells per lake (min, max)
 MOUNTAIN_COUNT = 5
 MOUNTAIN_SIZE = (30, 80)    # cells per range (min, max)
 SPAWN_CLEAR_RADIUS = 12.0   # no terrain this close to a spawn corner
-# mountains: half speed, but double sight/shot range and double fire rate
-MOUNTAIN_SPEED_FACTOR = 0.5
+# mountains: 1/3 speed, but double sight/shot range and double fire rate
+MOUNTAIN_SPEED_FACTOR = 1 / 3
 MOUNTAIN_RANGE_FACTOR = 2.0
 MOUNTAIN_ROF_FACTOR = 2.0
 

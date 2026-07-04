@@ -78,9 +78,10 @@ players (blue/red/green/yellow by join order).
 
 - **Lakes** (`~`) are impassable: move/build orders onto them are rejected
   and units path around the shore.
-- **Mountains** (`^`) slow units to half speed, but double their sight and
-  shot range and double their rate of fire while standing on them. You can
-  build on mountains — a fort on a peak shoots at range 12, every 2.5 ticks.
+- **Mountains** (`^`) slow units to one-third speed, but double their sight
+  and shot range and double their rate of fire while standing on them. You
+  can build on mountains — a fort on a peak shoots at range 12, every
+  2.5 ticks.
 
 ## Units and buildings
 
@@ -88,7 +89,7 @@ players (blue/red/green/yellow by join order).
 |---|---|---|---|---|---|---|---|
 | Worker | `o` | 100 | 100 | 10 | 2 | 1.0 | The only unit that can gather and build |
 | Tank | `T` | 250 | 300 | 30 | 1.5 | 0.4 | Slow, hits hard |
-| Range | `r` | 150 | 80 | 20 | 5 | 1.0 | Auto-fires in radius, every 3rd tick |
+| Range | `r` | 150 | 80 | 20 | 5 | 1.0 | Auto-fires in radius, every 3.75 ticks |
 | Fort | `#` | 400 | 500 | 25 | 6 | — | Building; auto-fires in radius, every 5th tick |
 | Wall | `=` | 35 | 200 | — | — | — | Building; blocks all unit movement |
 

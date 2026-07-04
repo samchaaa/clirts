@@ -188,7 +188,7 @@ class Renderer:
             terrain = f"{LAKE_COLOR}Lake — impassable{RESET}"
         elif (cursor_x, cursor_y) in self.mountains:
             terrain = (f"{MOUNTAIN_COLOR}Mountain — 2x sight & fire rate,"
-                       f" 1/2 speed{RESET}")
+                       f" 1/3 speed{RESET}")
 
         if unit:
             owner = unit["owner"]
