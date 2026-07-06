@@ -7,7 +7,7 @@ import urllib.parse
 from client.net import NetworkClient
 from client.render import Renderer
 from client.input import get_key, setup_terminal, restore_terminal
-from shared.messages import MAP_WIDTH, MAP_HEIGHT, UNIT_STATS
+from shared.messages import MAP_WIDTH, MAP_HEIGHT, UNIT_STATS, MIN_Z
 
 
 class GameClient:
@@ -18,6 +18,7 @@ class GameClient:
         self.net = NetworkClient(self._build_url(server, name), on_message=self._on_message)
         self.cursor_x = MAP_WIDTH // 2
         self.cursor_y = MAP_HEIGHT // 2
+        self.view_z = 0
         self.selected_ids: list[int] = []
         self.player_id = 0
         self.in_lobby = True
@@ -49,6 +50,8 @@ class GameClient:
                 self.renderer.status_message = "Rooms:\n" + "\n".join(lines)
         elif t == "snapshot":
             self.renderer.set_snapshot(msg)
+        elif t == "terrain":
+            self.renderer.set_terrain(msg.get("terrain") or {})
         elif t == "pong":
             sent = msg.get("time", 0)
             now = int(time.time() * 1000)
@@ -82,7 +85,8 @@ class GameClient:
                 sys.stdout.write(self.lobby_input)
                 sys.stdout.flush()
             else:
-                self.renderer.draw(self.cursor_x, self.cursor_y, self.selected_ids)
+                self.renderer.draw(self.cursor_x, self.cursor_y,
+                                   self.selected_ids, self.view_z)
             await asyncio.sleep(0.1)
 
     async def _input_loop(self):
@@ -126,7 +130,13 @@ class GameClient:
             self.running = False
             return
 
-        if key == 'W':
+        if key in ('C-w', 'C-s', 'C-a', 'C-d'):
+            # ctrl+arrow: jump 10 tiles, stopping at the map edge
+            dx, dy = {'C-w': (0, -1), 'C-s': (0, 1),
+                      'C-a': (-1, 0), 'C-d': (1, 0)}[key]
+            self.cursor_x = max(0, min(MAP_WIDTH - 1, self.cursor_x + dx * 10))
+            self.cursor_y = max(0, min(MAP_HEIGHT - 1, self.cursor_y + dy * 10))
+        elif key == 'W':
             self.cursor_y = 0
         elif key == 'S':
             self.cursor_y = MAP_HEIGHT - 1
@@ -142,6 +152,12 @@ class GameClient:
             self.cursor_x = max(0, self.cursor_x - 1)
         elif k == 'd':
             self.cursor_x = min(MAP_WIDTH - 1, self.cursor_x + 1)
+        elif key == '[':
+            self.view_z = max(MIN_Z, self.view_z - 1)
+            self.renderer.status_message = f"Viewing level z{self.view_z}"
+        elif key == ']':
+            self.view_z = min(0, self.view_z + 1)
+            self.renderer.status_message = f"Viewing level z{self.view_z}"
         elif key == ' ':
             await self._toggle_select()
         elif k == 'm':
@@ -151,6 +167,7 @@ class GameClient:
                     "command": "move",
                     "unit_ids": self.selected_ids,
                     "target": [self.cursor_x, self.cursor_y],
+                    "z": self.view_z,
                 })
                 self.renderer.status_message = f"Move {len(self.selected_ids)} units to ({self.cursor_x},{self.cursor_y})"
         elif k == 'x':
@@ -164,6 +181,9 @@ class GameClient:
                         "target_id": target["id"],
                     })
                     self.renderer.status_message = f"Attacking unit {target['id']}"
+                    self.renderer.add_log(
+                        f"Attacking enemy {target.get('type', 'unit')}"
+                        f" #{target['id']}")
                 else:
                     self.renderer.status_message = "No enemy unit at cursor"
         elif k == 'g':
@@ -179,6 +199,8 @@ class GameClient:
                     self.renderer.status_message = f"Gathering from node {node['id']}"
                 else:
                     self.renderer.status_message = "No resource node at cursor"
+        elif k in ('n', 'z', 'u'):
+            await self._dig_key(k)
         elif k in ('b', 't', 'r'):
             unit_type = {'b': 'worker', 't': 'tank', 'r': 'range'}[k]
             await self.net.send({
@@ -186,6 +208,7 @@ class GameClient:
                 "command": "build",
                 "unit_type": unit_type,
                 "target": [self.cursor_x, self.cursor_y],
+                "z": self.view_z,
             })
             cost = UNIT_STATS[unit_type]["cost"]
             self.renderer.status_message = (
@@ -202,6 +225,7 @@ class GameClient:
                     "unit_type": unit_type,
                     "unit_ids": self.selected_ids,
                     "target": [self.cursor_x, self.cursor_y],
+                    "z": self.view_z,
                 })
                 cost = UNIT_STATS[unit_type]["cost"]
                 self.renderer.status_message = (
@@ -213,12 +237,30 @@ class GameClient:
         elif k == 'f':
             self._select_all_nearby()
 
+    async def _dig_key(self, k: str):
+        if not self.selected_ids:
+            self.renderer.status_message = "Select units first"
+            return
+        command = {'n': 'dig', 'z': 'dig_down', 'u': 'dig_up'}[k]
+        label = {'n': "Mining", 'z': "Digging down",
+                 'u': "Digging up"}[k]
+        await self.net.send({
+            "type": "command",
+            "command": command,
+            "unit_ids": self.selected_ids,
+            "target": [self.cursor_x, self.cursor_y],
+            "z": self.view_z,
+        })
+        self.renderer.status_message = (
+            f"{label} at ({self.cursor_x},{self.cursor_y}) z{self.view_z}")
+
     async def _toggle_select(self):
         snap = self.renderer.last_snapshot
         if not snap:
             return
         for unit in snap.get("units", []):
-            if unit["owner"] != self.player_id:
+            if (unit["owner"] != self.player_id
+                    or unit.get("z", 0) != self.view_z):
                 continue
             ux, uy = int(round(unit["x"])), int(round(unit["y"]))
             if ux == self.cursor_x and uy == self.cursor_y:
@@ -235,6 +277,8 @@ class GameClient:
         if not snap:
             return None
         for unit in snap.get("units", []):
+            if unit.get("z", 0) != self.view_z:
+                continue
             ux, uy = int(round(unit["x"])), int(round(unit["y"]))
             if ux == self.cursor_x and uy == self.cursor_y:
                 return unit
@@ -245,6 +289,8 @@ class GameClient:
         if not snap:
             return None
         for node in snap.get("resource_nodes", []):
+            if node.get("z", 0) != self.view_z:
+                continue
             nx, ny = int(round(node["x"])), int(round(node["y"]))
             if nx == self.cursor_x and ny == self.cursor_y:
                 return node
@@ -256,7 +302,8 @@ class GameClient:
             return
         self.selected_ids.clear()
         for unit in snap.get("units", []):
-            if unit["owner"] != self.player_id:
+            if (unit["owner"] != self.player_id
+                    or unit.get("z", 0) != self.view_z):
                 continue
             ux, uy = int(round(unit["x"])), int(round(unit["y"]))
             if abs(ux - self.cursor_x) <= 3 and abs(uy - self.cursor_y) <= 3:

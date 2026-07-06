@@ -67,6 +67,12 @@ class GameRoom:
         try:
             while True:
                 self.state.tick_update()
+                if self.state.terrain_dirty:
+                    self.state.terrain_dirty = False
+                    await self.broadcast({
+                        "type": MsgType.TERRAIN,
+                        "terrain": self.state.terrain_msg(),
+                    })
                 snapshot = self.state.snapshot()
                 await self.broadcast(snapshot)
                 for p in self.players.values():

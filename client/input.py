@@ -12,6 +12,11 @@ if sys.platform == "win32":
             ch = msvcrt.getwch()
             if ch in ('\x00', '\xe0'):
                 ch2 = msvcrt.getwch()
+                # ctrl+arrows arrive as their own scan codes
+                ctrl_mapping = {'\x8d': 'C-w', '\x91': 'C-s',
+                                's': 'C-a', 't': 'C-d'}
+                if ch2 in ctrl_mapping:
+                    return ctrl_mapping[ch2]
                 mapping = {'H': 'w', 'P': 's', 'K': 'a', 'M': 'd'}
                 key = mapping.get(ch2)
                 # msvcrt doesn't encode modifiers; uppercase = shift held
@@ -53,8 +58,11 @@ else:
                             seq = sys.stdin.read(3)
                             if len(seq) == 3 and seq[0] == ';' and seq[2] in mapping:
                                 key = mapping[seq[2]]
-                                # mods 2/4/6/8 include shift
-                                return key.upper() if seq[1] in '2468' else key
+                                # mods 5-8 include ctrl (ctrl wins over shift)
+                                if seq[1] in '5678':
+                                    return 'C-' + key
+                                # mods 2/4 include shift
+                                return key.upper() if seq[1] in '24' else key
                             return None
                         return mapping.get(ch3)
                 return '\x1b'

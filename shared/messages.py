@@ -15,6 +15,7 @@ class MsgType(str, Enum):
     ROOM_JOINED = "room_joined"
     ROOMS = "rooms"
     SNAPSHOT = "snapshot"
+    TERRAIN = "terrain"
     PONG = "pong"
     ERROR = "error"
     PLAYER_LEFT = "player_left"
@@ -26,6 +27,9 @@ class Command(str, Enum):
     ATTACK = "attack"
     GATHER = "gather"
     BUILD = "build"
+    DIG = "dig"
+    DIG_DOWN = "dig_down"
+    DIG_UP = "dig_up"
 
 
 MAP_WIDTH = 120
@@ -82,6 +86,26 @@ SPAWN_CLEAR_RADIUS = 12.0   # no terrain this close to a spawn corner
 MOUNTAIN_SPEED_FACTOR = 1 / 3
 MOUNTAIN_RANGE_FACTOR = 2.0
 MOUNTAIN_ROF_FACTOR = 2.0
+
+# --- z-levels ----------------------------------------------------------------
+# the surface is z0; levels z-1..MIN_Z are solid rock until workers dig them
+# out. digging down leaves a hole (descend only); digging up leaves a ladder
+# (ascend only). holes and ladders are neutral — any player's units may use
+# them.
+MIN_Z = -3
+DIG_TIME = 15         # ticks for a worker to mine out one solid tile
+DIG_DOWN_TIME = 30    # ticks to dig a hole down to the next level
+DIG_UP_TIME = 30      # ticks to build a ladder up to the next level
+DIG_RANGE = 1.5       # how close a worker must be to mine a tile
+TRANSIT_RANGE = 0.75  # how close a unit must be to a hole/ladder to use it
+# richer resources deeper down: z -> (node count, amount per node);
+# underground nodes stay hidden until the tile holding them is mined out
+UNDERGROUND_NODES = {-1: (10, 800), -2: (14, 1500), -3: (18, 2500)}
+# water-filled caverns per underground level, generated after the nodes so
+# some nodes end up submerged; drain a lake (dig up into it from the level
+# below) to uncover them
+UNDERGROUND_LAKE_COUNT = 3
+UNDERGROUND_LAKE_SIZE = (12, 35)  # cells per lake (min, max)
 
 
 def encode(msg: dict) -> str:

@@ -5,6 +5,11 @@ from shared.messages import MAP_WIDTH, MAP_HEIGHT, UNIT_STATS
 
 UNIT_CHARS = {"worker": "o", "tank": "T", "range": "r",
               "fort": "#", "wall": "="}
+# dig sites render as marked (denser) rock / a faint passage-to-be
+SITE_CHARS = {"dig": "▒", "dig_down": ">", "dig_up": "<"}
+ROCK = "^"  # same glyph as surface mountains, but dim
+HOLE = ">"
+LADDER = "<"
 
 PLAYER_COLORS = {
     1: "\033[94m",   # blue
@@ -22,6 +27,8 @@ PLAYER_HIGHLIGHT = {
 RESOURCE_COLOR = "\033[33m"
 LAKE_COLOR = "\033[34m"
 MOUNTAIN_COLOR = "\033[90m"
+# dim gray: rock fades toward the terminal background
+ROCK_COLOR = "\033[2;90m"
 RESET = "\033[0m"
 DIM = "\033[2m"
 BOLD = "\033[1m"
@@ -36,48 +43,132 @@ class Renderer:
         self.latency_ms = 0
         self.lakes: set[tuple[int, int]] = set()
         self.mountains: set[tuple[int, int]] = set()
+        self.dug: dict[int, set[tuple[int, int]]] = {}
+        self.holes: dict[int, set[tuple[int, int]]] = {}
+        self.ladders: dict[int, set[tuple[int, int]]] = {}
+        self.water: dict[int, set[tuple[int, int]]] = {}
+        self.event_log: list[str] = []
 
     def set_snapshot(self, snapshot: dict):
         self.last_snapshot = snapshot
+        for ev in snapshot.get("events", []):
+            msg = self._format_event(ev)
+            if msg:
+                self.add_log(msg)
+
+    def add_log(self, msg: str):
+        """Timestamped rolling log; newest entries shown at the bottom."""
+        tick = (self.last_snapshot or {}).get("tick", 0)
+        self.event_log.append(f"{DIM}{tick // 10:>4}s{RESET} {msg}")
+        del self.event_log[:-100]
+
+    def _format_event(self, ev: dict) -> str | None:
+        kind = ev.get("kind")
+        mine = ev.get("owner") == self.player_id
+        pos = f"({ev.get('x')},{ev.get('y')}) z{ev.get('z', 0)}"
+        if kind == "node_depleted":
+            return f"{RESOURCE_COLOR}Node {pos} exhausted{RESET}"
+        if kind == "flood":
+            return (f"{LAKE_COLOR}Flood! z{ev.get('z')}"
+                    f" ({ev.get('count')} tiles) {pos}{RESET}")
+        if kind == "unit_died":
+            utype = ev.get("type", "unit")
+            verb = "drowned" if ev.get("cause") == "flood" else (
+                "destroyed" if utype in ("fort", "wall") else "killed")
+            if mine:
+                return f"\033[91mYour {utype} {verb} {pos}{RESET}"
+            return f"\033[92mEnemy {utype} {verb} {pos}{RESET}"
+        # the rest only concern the acting player
+        if not mine:
+            return None
+        if kind == "under_attack":
+            return f"\033[91m{BOLD}Under attack! {pos}{RESET}"
+        if kind == "dig_queue_done":
+            return f"Mining queue done {pos}"
+        if kind == "dug_down":
+            return f"Dug down to z{ev.get('z')} ({ev.get('x')},{ev.get('y')})"
+        if kind == "dug_up":
+            return f"Ladder up to z{ev.get('z')} ({ev.get('x')},{ev.get('y')})"
+        return None
 
     def set_terrain(self, terrain: dict):
         self.lakes = {tuple(c) for c in terrain.get("lakes", [])}
         self.mountains = {tuple(c) for c in terrain.get("mountains", [])}
+        self.dug = {int(z): {tuple(c) for c in cells}
+                    for z, cells in terrain.get("dug", {}).items()}
+        self.holes = {int(z): {tuple(c) for c in cells}
+                      for z, cells in terrain.get("holes", {}).items()}
+        self.ladders = {int(z): {tuple(c) for c in cells}
+                        for z, cells in terrain.get("ladders", {}).items()}
+        self.water = {int(z): {tuple(c) for c in cells}
+                      for z, cells in terrain.get("water", {}).items()}
 
-    def draw(self, cursor_x: int, cursor_y: int, selected_ids: list[int]):
+    def draw(self, cursor_x: int, cursor_y: int, selected_ids: list[int],
+             view_z: int = 0):
         if self.last_snapshot is None:
             self._draw_lobby()
             return
 
         snap = self.last_snapshot
-        units = snap.get("units", [])
+        all_units = snap.get("units", [])
         resources = snap.get("resources", {})
-        nodes = snap.get("resource_nodes", [])
-        sites = snap.get("sites", [])
         tick = snap.get("tick", 0)
         winner = snap.get("winner")
+
+        # only what lives on the viewed level is drawn
+        units = [u for u in all_units if u.get("z", 0) == view_z]
+        nodes = [n for n in snap.get("resource_nodes", [])
+                 if n.get("z", 0) == view_z]
+        sites = [s for s in snap.get("sites", [])
+                 if s.get("z", 0) == view_z]
 
         grid = [[" " for _ in range(MAP_WIDTH)] for _ in range(MAP_HEIGHT)]
         color_grid = [["" for _ in range(MAP_WIDTH)] for _ in range(MAP_HEIGHT)]
 
         # terrain first: everything else draws over it
-        for x, y in self.lakes:
+        if view_z == 0:
+            for x, y in self.lakes:
+                if 0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT:
+                    grid[y][x] = "~"
+                    color_grid[y][x] = LAKE_COLOR
+            for x, y in self.mountains:
+                if 0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT:
+                    grid[y][x] = "^"
+                    color_grid[y][x] = MOUNTAIN_COLOR
+        else:
+            # underground: solid rock except what has been dug out
+            for y in range(MAP_HEIGHT):
+                for x in range(MAP_WIDTH):
+                    grid[y][x] = ROCK
+                    color_grid[y][x] = ROCK_COLOR
+            for x, y in self.dug.get(view_z, ()):
+                if 0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT:
+                    grid[y][x] = " "
+                    color_grid[y][x] = ""
+        for x, y in self.holes.get(view_z, ()):
+            if 0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT:
+                grid[y][x] = HOLE
+                color_grid[y][x] = BOLD
+        for x, y in self.ladders.get(view_z, ()):
+            if 0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT:
+                grid[y][x] = LADDER
+                color_grid[y][x] = BOLD
+        # flood water covers whatever it swallowed (incl. holes/ladders)
+        for x, y in self.water.get(view_z, ()):
             if 0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT:
                 grid[y][x] = "~"
                 color_grid[y][x] = LAKE_COLOR
-        for x, y in self.mountains:
-            if 0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT:
-                grid[y][x] = "^"
-                color_grid[y][x] = MOUNTAIN_COLOR
 
         # projectile tracers, so units/nodes draw over them
         for shot in snap.get("shots", []):
-            self._draw_shot(grid, color_grid, shot)
+            if shot.get("z", 0) == view_z:
+                self._draw_shot(grid, color_grid, shot)
 
         for site in sites:
             sx, sy = int(round(site["x"])), int(round(site["y"]))
             if 0 <= sx < MAP_WIDTH and 0 <= sy < MAP_HEIGHT:
-                grid[sy][sx] = UNIT_CHARS.get(site["type"], "?")
+                grid[sy][sx] = SITE_CHARS.get(
+                    site["type"], UNIT_CHARS.get(site["type"], "?"))
                 color_grid[sy][sx] = (
                     PLAYER_COLORS.get(site["owner"], RESET) + DIM)
 
@@ -100,56 +191,72 @@ class Renderer:
                 else:
                     color_grid[uy][ux] = c
 
-        sidebar = self._build_sidebar(units, nodes, sites,
-                                      cursor_x, cursor_y, selected_ids)
+        sidebar = self._build_sidebar(all_units, nodes, sites,
+                                      cursor_x, cursor_y, selected_ids,
+                                      view_z)
 
         out = []
-        out.append("\033[H\033[2J")
+        # repaint in place (no full-screen clear — that causes flicker);
+        # every row ends with erase-to-eol and the frame with erase-below
+        out.append("\033[H")
 
-        out.append(f"{DIM}{'─' * (MAP_WIDTH + 2)}{RESET}\n")
+        out.append(f"{DIM}{'─' * (MAP_WIDTH + 2)}{RESET}\033[K\n")
         for y in range(MAP_HEIGHT):
             out.append(f"{DIM}│{RESET}")
+            active = ""  # emit color codes only when the color changes
             for x in range(MAP_WIDTH):
                 if x == cursor_x and y == cursor_y:
+                    if active:
+                        out.append(RESET)
+                        active = ""
                     if grid[y][x] != " ":
                         out.append(f"\033[7m{color_grid[y][x]}{grid[y][x]}{RESET}")
                     else:
                         out.append(f"\033[7m+{RESET}")
-                else:
-                    c = color_grid[y][x]
+                    continue
+                c = color_grid[y][x]
+                if c != active:
+                    if active:
+                        out.append(RESET)
                     if c:
-                        out.append(f"{c}{grid[y][x]}{RESET}")
-                    else:
-                        out.append(grid[y][x])
+                        out.append(c)
+                    active = c
+                out.append(grid[y][x])
+            if active:
+                out.append(RESET)
             out.append(f"{DIM}│{RESET}")
             if y < len(sidebar):
                 out.append(f"  {sidebar[y]}")
-            out.append("\n")
-        out.append(f"{DIM}{'─' * (MAP_WIDTH + 2)}{RESET}\n")
+            out.append("\033[K\n")
+        out.append(f"{DIM}{'─' * (MAP_WIDTH + 2)}{RESET}\033[K\n")
 
         my_res = resources.get(str(self.player_id), 0)
-        my_units = sum(1 for u in units if u["owner"] == self.player_id)
+        my_units = sum(1 for u in all_units if u["owner"] == self.player_id)
         out.append(f" Tick: {tick}  Resources: {my_res}  Units: {my_units}")
-        out.append(f"  Room: {self.room_name}  Ping: {self.latency_ms}ms\n")
+        out.append(f"  Room: {self.room_name}  Ping: {self.latency_ms}ms\033[K\n")
 
         sel_count = len(selected_ids)
-        out.append(f" Selected: {sel_count}  Cursor: ({cursor_x},{cursor_y})\n")
+        out.append(f" {BOLD}Level: z{view_z}{RESET}  Selected: {sel_count}"
+                   f"  Cursor: ({cursor_x},{cursor_y})\033[K\n")
 
-        out.append(f" {DIM}[WASD]cursor [Space]select [F]area [E]clear [M]move [X]attack [G]gather [Q]quit{RESET}\n")
+        out.append(f" {DIM}[WASD]cursor [Space]select [F]area [E]clear [M]move [X]attack [G]gather [Q]quit{RESET}\033[K\n")
         out.append(f" {DIM}build: [B]worker [T]tank [R]range [C]fort [V]wall"
-                   f" (fort/wall: selected worker builds; tank/range need a fort near){RESET}\n")
+                   f" (fort/wall: selected worker builds; tank/range need a fort near){RESET}\033[K\n")
+        out.append(f" {DIM}depth: [ down / ] up view  [N]mine rock"
+                   f"  [Z]dig down/descend {HOLE}  [U]dig up/ascend {LADDER}{RESET}\033[K\n")
 
         if winner is not None:
             if winner == self.player_id:
-                out.append(f"\n {BOLD}\033[92m*** YOU WIN! ***{RESET}\n")
+                out.append(f"\033[K\n {BOLD}\033[92m*** YOU WIN! ***{RESET}\033[K\n")
             elif winner == -1:
-                out.append(f"\n {BOLD}\033[93m*** DRAW ***{RESET}\n")
+                out.append(f"\033[K\n {BOLD}\033[93m*** DRAW ***{RESET}\033[K\n")
             else:
-                out.append(f"\n {BOLD}\033[91m*** YOU LOSE ***{RESET}\n")
+                out.append(f"\033[K\n {BOLD}\033[91m*** YOU LOSE ***{RESET}\033[K\n")
 
         if self.status_message:
-            out.append(f" {self.status_message}\n")
+            out.append(f" {self.status_message}\033[K\n")
 
+        out.append("\033[J")
         sys.stdout.write("".join(out))
         sys.stdout.flush()
 
@@ -172,23 +279,35 @@ class Renderer:
             grid[iy][ix] = "x"
             color_grid[iy][ix] = c
 
-    def _build_sidebar(self, units, nodes, sites, cursor_x, cursor_y,
-                       selected_ids) -> list[str]:
-        lines = [f"{BOLD}── CURSOR ──{RESET}"]
+    def _build_sidebar(self, all_units, nodes, sites, cursor_x, cursor_y,
+                       selected_ids, view_z) -> list[str]:
+        lines = [f"{BOLD}── CURSOR (z{view_z}) ──{RESET}"]
 
-        unit = next((u for u in units
-                     if int(round(u["x"])) == cursor_x
+        unit = next((u for u in all_units
+                     if u.get("z", 0) == view_z
+                     and int(round(u["x"])) == cursor_x
                      and int(round(u["y"])) == cursor_y), None)
         node = next((n for n in nodes
                      if int(round(n["x"])) == cursor_x
                      and int(round(n["y"])) == cursor_y), None)
 
+        cur = (cursor_x, cursor_y)
         terrain = None
-        if (cursor_x, cursor_y) in self.lakes:
+        if cur in self.water.get(view_z, ()):
+            terrain = (f"{LAKE_COLOR}Water — impassable; drain it from"
+                       f" the level below{RESET}")
+        elif cur in self.holes.get(view_z, ()):
+            terrain = f"{BOLD}Hole down — [Z] descends{RESET}"
+        elif cur in self.ladders.get(view_z, ()):
+            terrain = f"{BOLD}Ladder up — [U] ascends{RESET}"
+        elif view_z < 0 and cur not in self.dug.get(view_z, ()):
+            terrain = (f"{MOUNTAIN_COLOR}Solid rock —"
+                       f" [N] sends a worker to mine{RESET}")
+        elif view_z == 0 and cur in self.lakes:
             terrain = f"{LAKE_COLOR}Lake — impassable{RESET}"
-        elif (cursor_x, cursor_y) in self.mountains:
+        elif view_z == 0 and cur in self.mountains:
             terrain = (f"{MOUNTAIN_COLOR}Mountain — 2x sight & fire rate,"
-                       f" 1/3 speed{RESET}")
+                       f" 1/3 speed; [N] mines it flat{RESET}")
 
         if unit:
             owner = unit["owner"]
@@ -208,7 +327,8 @@ class Renderer:
             c = PLAYER_COLORS.get(owner, RESET)
             who = "you" if owner == self.player_id else f"enemy P{owner}"
             pct = 100 * site["progress"] // site["total"]
-            lines.append(f"{c}{site['type'].capitalize()} site ({who}){RESET}")
+            name = site['type'].replace('_', ' ').capitalize()
+            lines.append(f"{c}{name} site ({who}){RESET}")
             lines.append(f"Progress: {pct}%")
         elif terrain:
             lines.append(terrain)
@@ -217,17 +337,26 @@ class Renderer:
         if (unit or node) and terrain:
             lines.append(terrain)
 
-        selected = [u for u in units if u["id"] in selected_ids]
+        selected = [u for u in all_units if u["id"] in selected_ids]
         lines.append("")
         lines.append(f"{BOLD}── SELECTED ({len(selected)}) ──{RESET}")
-        room = MAP_HEIGHT - len(lines) - 1
+        # cap the selection list so the log below keeps some space
+        room = min(8, MAP_HEIGHT - len(lines) - 1)
         for u in selected[:room]:
             utype = u.get("type", "worker")
+            uz = u.get("z", 0)
+            depth = f" z{uz}" if uz != view_z else ""
             lines.append(f"#{u['id']} {utype}: "
                          f"{u['hp']}/{UNIT_STATS[utype]['hp']} hp"
-                         f"  ({int(round(u['x']))},{int(round(u['y']))})")
+                         f"  ({int(round(u['x']))},{int(round(u['y']))})"
+                         f"{depth}")
         if len(selected) > room:
             lines.append(f"{DIM}…+{len(selected) - room} more{RESET}")
+
+        lines.append("")
+        lines.append(f"{BOLD}── LOG ──{RESET}")
+        room = MAP_HEIGHT - len(lines)
+        lines.extend(self.event_log[-room:])
         return lines[:MAP_HEIGHT]
 
     def _draw_lobby(self):
