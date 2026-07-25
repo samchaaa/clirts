@@ -5,7 +5,7 @@ import time
 import urllib.parse
 
 from client.net import NetworkClient
-from client.render import Renderer
+from client.render import Renderer, unit_tiles
 from client.input import get_key, setup_terminal, restore_terminal
 from shared.messages import MAP_WIDTH, MAP_HEIGHT, UNIT_STATS, MIN_Z
 
@@ -191,6 +191,7 @@ class GameClient:
         elif k == 'g':
             if self.selected_ids:
                 node = self._node_at_cursor()
+                unit = self._unit_at_cursor()
                 if node:
                     await self.net.send({
                         "type": "command",
@@ -199,8 +200,18 @@ class GameClient:
                         "node_id": node["id"],
                     })
                     self.renderer.status_message = f"Gathering from node {node['id']}"
+                elif unit and unit.get("type") == "farm":
+                    await self.net.send({
+                        "type": "command",
+                        "command": "farm",
+                        "unit_ids": self.selected_ids,
+                        "farm_id": unit["id"],
+                    })
+                    self.renderer.status_message = (
+                        f"Workers heading to farm #{unit['id']}")
                 else:
-                    self.renderer.status_message = "No resource node at cursor"
+                    self.renderer.status_message = (
+                        "No resource node or friendly farm at cursor")
         elif k in ('n', 'z', 'u'):
             await self._dig_key(k)
         elif k in ('b', 't', 'r'):
@@ -215,8 +226,19 @@ class GameClient:
             cost = UNIT_STATS[unit_type]["cost"]
             self.renderer.status_message = (
                 f"Building {unit_type} ({cost}) at ({self.cursor_x},{self.cursor_y})")
-        elif k in ('c', 'v'):
-            unit_type = {'c': 'fort', 'v': 'wall'}[k]
+        elif k == 'l':
+            await self._laser_key()
+        elif k in ('c', 'v', 'p', 'o'):
+            unit_type = {'c': 'fort', 'v': 'wall', 'p': 'farm',
+                         'o': 'laser'}[k]
+            if unit_type == "laser":
+                snap = self.renderer.last_snapshot or {}
+                info = (snap.get("laser") or {}).get(str(self.player_id)) or {}
+                if not info.get("unlocked"):
+                    self.renderer.status_message = (
+                        "Space laser locked: build every other building type,"
+                        " reach z-3, and exhaust all surface nodes")
+                    return
             if not self.selected_ids:
                 self.renderer.status_message = (
                     f"Select a worker to build the {unit_type}")
@@ -238,6 +260,29 @@ class GameClient:
             self.renderer.status_message = "Selection cleared"
         elif k == 'f':
             self._select_all_nearby()
+
+    async def _laser_key(self):
+        snap = self.renderer.last_snapshot or {}
+        info = (snap.get("laser") or {}).get(str(self.player_id)) or {}
+        if info.get("active"):
+            msg = f"Steering laser to ({self.cursor_x},{self.cursor_y})"
+        elif info.get("charges"):
+            msg = f"SPACE LASER FIRED at ({self.cursor_x},{self.cursor_y})"
+        elif info.get("unlocked"):
+            self.renderer.status_message = (
+                "No charged space laser — build one with [O] (500)")
+            return
+        else:
+            self.renderer.status_message = (
+                "Space laser locked: build every other building type, reach"
+                " z-3, and exhaust all surface nodes")
+            return
+        await self.net.send({
+            "type": "command",
+            "command": "laser",
+            "target": [self.cursor_x, self.cursor_y],
+        })
+        self.renderer.status_message = msg
 
     async def _dig_key(self, k: str):
         if not self.selected_ids:
@@ -264,8 +309,7 @@ class GameClient:
             if (unit["owner"] != self.player_id
                     or unit.get("z", 0) != self.view_z):
                 continue
-            ux, uy = int(round(unit["x"])), int(round(unit["y"]))
-            if ux == self.cursor_x and uy == self.cursor_y:
+            if (self.cursor_x, self.cursor_y) in unit_tiles(unit):
                 uid = unit["id"]
                 if uid in self.selected_ids:
                     self.selected_ids.remove(uid)
@@ -281,8 +325,7 @@ class GameClient:
         for unit in snap.get("units", []):
             if unit.get("z", 0) != self.view_z:
                 continue
-            ux, uy = int(round(unit["x"])), int(round(unit["y"]))
-            if ux == self.cursor_x and uy == self.cursor_y:
+            if (self.cursor_x, self.cursor_y) in unit_tiles(unit):
                 return unit
         return None
 

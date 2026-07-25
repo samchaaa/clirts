@@ -15,6 +15,8 @@ from shared.messages import (
     MIN_Z, DIG_TIME, DIG_DOWN_TIME, DIG_UP_TIME,
     DIG_RANGE, TRANSIT_RANGE, UNDERGROUND_NODES,
     UNDERGROUND_LAKE_COUNT, UNDERGROUND_LAKE_SIZE,
+    FARM_YIELD, FARM_PERIOD, FARM_WORK_RANGE, FARM_FOOTPRINT,
+    LASER_RADIUS, LASER_SPEED, LASER_DURATION, LASER_DRILL_TIME,
 )
 
 # 1.5 guarantees distinct rendered cells even when a pair separates
@@ -25,6 +27,8 @@ MIN_SEPARATION = 1.5
 BUILDER_CLEARANCE = 3.0
 # ticks between "under attack" log events per player
 UNDER_ATTACK_COOLDOWN = 50
+# a unit hit this recently is flagged "under attack" in the snapshot
+UNDER_ATTACK_TICKS = 20
 
 
 @dataclass
@@ -48,12 +52,18 @@ class Unit:
     dig_tasks: list[dict] = field(default_factory=list)
     # {"x", "y", "dz"}: walk to an existing tunnel and change level
     transit: dict | None = None
+    # id of the farm this worker is working; progress resets on payout and
+    # whenever the worker stops farming
+    farm_target: int | None = None
+    farm_progress: int = 0
     # multi-leg cross-level move plan; each leg is
     # {"x", "y", "z", "dz"}: walk to (x, y) on level z, then change level by
     # dz (dz == 0 marks the final destination leg). Built by _plan_route.
     route: list[dict] = field(default_factory=list)
     # set when something other than combat kills the unit (e.g. "flood")
     death_cause: str | None = None
+    # tick this unit last took damage (drives the "under attack" flag)
+    last_hit: int = -10**9
 
     @property
     def build_task(self) -> dict | None:
@@ -98,6 +108,10 @@ class GameState:
     # either way (dig down and dig up both produce one)
     tunnels: dict[int, set[tuple[int, int]]] = field(
         default_factory=lambda: {z: set() for z in range(MIN_Z + 1, 1)})
+    # laser bore holes: holes[z] are tiles on level z burned open to z - 1.
+    # NOT passage — any unit that steps on one falls down the shaft and dies
+    holes: dict[int, set[tuple[int, int]]] = field(
+        default_factory=lambda: {z: set() for z in range(MIN_Z + 1, 1)})
     # flooded tunnel tiles (dug but impassable); filled by lake breaches
     water: dict[int, set[tuple[int, int]]] = field(
         default_factory=lambda: {z: set() for z in range(MIN_Z, 0)})
@@ -107,6 +121,15 @@ class GameState:
     events: list[dict] = field(default_factory=list)
     # last tick each player got an "under attack" event (throttling)
     hit_alerts: dict[int, int] = field(default_factory=dict)
+    # space laser unlock tracking: building types each player has ever
+    # completed, and players who have ever had a unit on the lowest level
+    built: dict[int, set[str]] = field(default_factory=dict)
+    reached_bottom: set[int] = field(default_factory=set)
+    # laser buildings whose single charge has been fired
+    spent_lasers: set[int] = field(default_factory=set)
+    # active beams: {"owner", "x", "y", "tx", "ty", "tile", "dwell", "z",
+    # "expires"}; the beam chases (tx, ty) and burns at level z
+    beams: list[dict] = field(default_factory=list)
 
     @staticmethod
     def _spawn_corners() -> list[tuple[int, int]]:
@@ -136,6 +159,7 @@ class GameState:
     def remove_player(self, player_id: int):
         self.players.discard(player_id)
         self.resources.pop(player_id, None)
+        self.beams = [b for b in self.beams if b["owner"] != player_id]
         dead = [uid for uid, u in self.units.items() if u.owner == player_id]
         for uid in dead:
             del self.units[uid]
@@ -185,6 +209,8 @@ class GameState:
                 "dug": {str(z): sorted(c) for z, c in self.dug.items()},
                 "tunnels": {str(z): sorted(c)
                             for z, c in self.tunnels.items()},
+                "holes": {str(z): sorted(c)
+                          for z, c in self.holes.items()},
                 "water": {str(z): sorted(c)
                           for z, c in self.water.items()}}
 
@@ -310,6 +336,10 @@ class GameState:
             return self._cmd_dig_down(player_id, cmd)
         elif action == Command.DIG_UP:
             return self._cmd_dig_up(player_id, cmd)
+        elif action == Command.FARM:
+            return self._cmd_farm(player_id, cmd)
+        elif action == Command.LASER:
+            return self._cmd_laser(player_id, cmd)
         return False
 
     @staticmethod
@@ -327,6 +357,8 @@ class GameState:
         unit.gather_target = None
         unit.transit = None
         unit.route = []
+        unit.farm_target = None
+        unit.farm_progress = 0
         if not keep_build:
             self._cancel_build(unit)
         if not keep_dig:
@@ -484,6 +516,8 @@ class GameState:
                         continue
                     if not self._passable(nx, ny, z):
                         continue
+                    if (nx, ny) in self.holes.get(z, ()):
+                        continue  # never path over a deadly bore hole
                     if dx != 0 and dy != 0 and (
                             not self._passable(cx + dx, cy, z)
                             or not self._passable(cx, cy + dy, z)):
@@ -498,18 +532,32 @@ class GameState:
                                             seq, nn))
         return None
 
+    @staticmethod
+    def _building_tiles(x: float, y: float,
+                        btype: str) -> list[tuple[float, float]]:
+        """The tiles a building occupies: its position, except farms, which
+        span a 2x2 field anchored at their position."""
+        if btype == "farm":
+            ax, ay = int(round(x)), int(round(y))
+            return [(float(ax + dx), float(ay + dy))
+                    for dx, dy in FARM_FOOTPRINT]
+        return [(x, y)]
+
     def _site_occupied(self, player_id: int, tx: float, ty: float,
                        z: int) -> bool:
         for u in self.units.values():
             if u.hp <= 0:
                 continue
-            if (u.type in BUILDINGS and u.z == z
-                    and _dist(u.x, u.y, tx, ty) < WALL_RADIUS):
+            if u.type in BUILDINGS and u.z == z and any(
+                    _dist(bx, by, tx, ty) < WALL_RADIUS
+                    for bx, by in self._building_tiles(u.x, u.y, u.type)):
                 return True
             if u.owner == player_id:
                 for task in u.build_tasks:
-                    if (task["z"] == z
-                            and _dist(task["x"], task["y"], tx, ty) < WALL_RADIUS):
+                    if task["z"] == z and any(
+                            _dist(bx, by, tx, ty) < WALL_RADIUS
+                            for bx, by in self._building_tiles(
+                                task["x"], task["y"], task["type"])):
                         return True
         return False
 
@@ -552,6 +600,83 @@ class GameState:
                 unit.gathering = True
         return True
 
+    def _laser_unlocked(self, player_id: int) -> bool:
+        """All three conditions: (a) has ever completed every other building
+        type, (b) has had a unit reach the lowest level, (c) no resource
+        node remains on the surface (whoever exhausted them)."""
+        prereq = {b for b in BUILDINGS if b != "laser"}
+        return (prereq <= self.built.get(player_id, set())
+                and player_id in self.reached_bottom
+                and all(n.z != 0 for n in self.resource_nodes.values()))
+
+    def _cmd_laser(self, player_id: int, cmd: dict) -> bool:
+        """Steer this player's active beam to the target — or, with no beam
+        up, fire a charged laser building, starting the beam at the target."""
+        target = cmd.get("target")
+        if not target or len(target) != 2:
+            return False
+        tx, ty = float(target[0]), float(target[1])
+        if not (0 <= tx < MAP_WIDTH and 0 <= ty < MAP_HEIGHT):
+            return False
+        for beam in self.beams:
+            if beam["owner"] == player_id:
+                beam["tx"], beam["ty"] = tx, ty
+                return True
+        dish = next(
+            (u for u in self.units.values()
+             if u.owner == player_id and u.type == "laser" and u.hp > 0
+             and u.id not in self.spent_lasers),
+            None)
+        if dish is None:
+            return False
+        self.spent_lasers.add(dish.id)
+        self.beams.append({"owner": player_id, "x": tx, "y": ty,
+                           "tx": tx, "ty": ty,
+                           "tile": (int(round(tx)), int(round(ty))),
+                           "dwell": 0, "z": 0,
+                           "expires": self.tick + LASER_DURATION})
+        self.events.append({"kind": "laser_fired", "owner": player_id,
+                            "x": int(tx), "y": int(ty), "z": 0})
+        return True
+
+    def _nearest_farm_tile(self, unit: Unit,
+                           farm: Unit) -> tuple[float, float]:
+        return min(self._building_tiles(farm.x, farm.y, "farm"),
+                   key=lambda t: _dist(unit.x, unit.y, t[0], t[1]))
+
+    def _free_farm_tile(self, unit: Unit, farm: Unit) -> tuple[float, float]:
+        """The nearest field tile not already taken by another farmer, so
+        co-workers spread across the 2x2 field instead of stacking."""
+        tiles = self._building_tiles(farm.x, farm.y, "farm")
+        others = [u for u in self.units.values()
+                  if u is not unit and u.hp > 0
+                  and u.farm_target == farm.id]
+        free = [t for t in tiles
+                if all(_dist(o.x, o.y, t[0], t[1]) > 0.5 for o in others)]
+        return min(free or tiles,
+                   key=lambda t: _dist(unit.x, unit.y, t[0], t[1]))
+
+    def _farm_dist(self, unit: Unit, farm: Unit) -> float:
+        tx, ty = self._nearest_farm_tile(unit, farm)
+        return _dist(unit.x, unit.y, tx, ty)
+
+    def _cmd_farm(self, player_id: int, cmd: dict) -> bool:
+        # farms are neutral: any player's workers may farm any farm; the
+        # income goes to the farmer's owner
+        farm_id = cmd.get("farm_id")
+        farm = self.units.get(farm_id) if farm_id is not None else None
+        if not farm or farm.type != "farm" or farm.hp <= 0:
+            return False
+        ok = False
+        for uid in cmd.get("unit_ids", []):
+            unit = self.units.get(uid)
+            if (unit and unit.owner == player_id and unit.hp > 0
+                    and unit.type == "worker" and unit.z == farm.z):
+                self._clear_orders(unit)
+                unit.farm_target = farm.id
+                ok = True
+        return ok
+
     def _cmd_build(self, player_id: int, cmd: dict) -> bool:
         target = cmd.get("target")
         z = self._cmd_z(cmd)
@@ -565,9 +690,16 @@ class GameState:
             return False
         if not self._passable(tx, ty, z):
             return False
+        if (int(round(tx)), int(round(ty))) in self.holes.get(z, ()):
+            return False  # nothing can be built (or spawned) over a shaft
         cost = UNIT_STATS[unit_type]["cost"]
         if self.resources.get(player_id, 0) < cost:
             return False
+        if unit_type == "farm" and z != 0:
+            return False  # crops need sunlight
+        if unit_type == "laser" and (
+                z != 0 or not self._laser_unlocked(player_id)):
+            return False  # needs sky view + all unlock conditions
         if unit_type in BUILDINGS:
             # buildings are constructed on site by a worker
             worker = next(
@@ -579,8 +711,16 @@ class GameState:
             )
             if worker is None:
                 return False
-            if self._site_occupied(player_id, tx, ty, z):
-                return False
+            # every tile of the footprint must fit, be passable, and be free
+            for bx, by in self._building_tiles(tx, ty, unit_type):
+                if not (0 <= bx < MAP_WIDTH and 0 <= by < MAP_HEIGHT):
+                    return False
+                if not self._passable(bx, by, z):
+                    return False
+                if (int(bx), int(by)) in self.holes.get(z, ()):
+                    return False
+                if self._site_occupied(player_id, bx, by, z):
+                    return False
             self.resources[player_id] -= cost
             # queue behind any in-progress builds
             self._clear_orders(worker, keep_build=True)
@@ -692,12 +832,18 @@ class GameState:
         self.events = []
         self._move_units()
         self._separate_units()
+        self._resolve_falling()
         self._resolve_transit()
         self._resolve_route()
         self._resolve_digging()
         self._resolve_building()
         self._resolve_gathering()
+        self._resolve_farming()
         self._resolve_combat()
+        self._resolve_beams()
+        for u in self.units.values():
+            if u.hp > 0 and u.z == MIN_Z:
+                self.reached_bottom.add(u.owner)
         self._cleanup_dead()
         self._check_victory()
 
@@ -719,16 +865,18 @@ class GameState:
                 else:
                     # dead, or escaped to another level
                     unit.attack_target = None
-            elif unit.build_task:
-                site = (unit.build_task["x"], unit.build_task["y"])
-                if _dist(unit.x, unit.y, *site) > BUILD_RANGE:
-                    move_target = site
             elif unit.dig_tasks:
+                # before build_task: a farm sited on mountain queues mine
+                # jobs on its builder, which must reach each rock tile first
                 task = unit.dig_tasks[0]
                 site = (task["x"], task["y"])
                 reach = DIG_RANGE if task["kind"] == "dig" else TRANSIT_RANGE
                 if (task["z"] == unit.z
                         and _dist(unit.x, unit.y, *site) > reach):
+                    move_target = site
+            elif unit.build_task:
+                site = (unit.build_task["x"], unit.build_task["y"])
+                if _dist(unit.x, unit.y, *site) > BUILD_RANGE:
                     move_target = site
             elif unit.transit:
                 site = (unit.transit["x"], unit.transit["y"])
@@ -748,6 +896,17 @@ class GameState:
                 else:
                     unit.gathering = False
                     unit.gather_target = None
+            elif unit.farm_target is not None:
+                farm = self.units.get(unit.farm_target)
+                if farm and farm.hp > 0 and farm.z == unit.z:
+                    # walk onto a free field tile (not merely into range),
+                    # so farmers visibly stand in the field
+                    tile = self._free_farm_tile(unit, farm)
+                    if _dist(unit.x, unit.y, tile[0], tile[1]) > 0.3:
+                        move_target = tile
+                else:
+                    unit.farm_target = None
+                    unit.farm_progress = 0
             elif unit.target:
                 move_target = unit.target
 
@@ -867,6 +1026,24 @@ class GameState:
                 dx, dy = dest["path"][-1]
                 unit.route = self._plan_route(unit, int(dx), int(dy),
                                               dest["z"]) or []
+
+    def _resolve_falling(self):
+        """Any unit standing on a laser bore hole falls down the shaft —
+        through every burned-open level below — and dies on landing. A
+        shaft that goes all the way to the bottom is an abyss."""
+        for unit in self.units.values():
+            if unit.hp <= 0 or unit.stats["speed"] <= 0:
+                continue
+            tile = (int(round(unit.x)), int(round(unit.y)))
+            if tile not in self.holes.get(unit.z, ()):
+                continue
+            z = unit.z
+            while tile in self.holes.get(z, ()):
+                z -= 1
+            unit.x, unit.y = float(tile[0]), float(tile[1])
+            unit.z = z
+            unit.hp = 0
+            unit.death_cause = "abyss" if z == MIN_Z else "fell"
 
     def _maybe_drown(self, unit: Unit):
         """Arriving on a flooded tile (e.g. dropping through a tunnel into
@@ -1011,6 +1188,21 @@ class GameState:
             if unit.hp <= 0 or not task or unit.z != task["z"]:
                 continue
             if _dist(unit.x, unit.y, task["x"], task["y"]) <= BUILD_RANGE:
+                # crops need flat land: a farm sited on mountain tiles has
+                # its builder mine them flat before construction starts
+                if task["type"] == "farm":
+                    rocks = [
+                        (int(bx), int(by))
+                        for bx, by in self._building_tiles(
+                            task["x"], task["y"], "farm")
+                        if (int(bx), int(by)) in self.mountains]
+                    if rocks:
+                        if not unit.dig_tasks:
+                            for rx, ry in rocks:
+                                unit.dig_tasks.append(
+                                    {"kind": "dig", "x": rx, "y": ry,
+                                     "z": 0, "progress": 0})
+                        continue
                 task["progress"] += 1
                 if task["progress"] >= UNIT_STATS[task["type"]]["build_time"]:
                     uid = self.next_unit_id
@@ -1019,6 +1211,11 @@ class GameState:
                                            x=task["x"], y=task["y"],
                                            type=task["type"], z=task["z"])
                     unit.build_tasks.pop(0)
+                    self.built.setdefault(unit.owner, set()).add(task["type"])
+                    # a farm's builder stays on to work it (unless more
+                    # build orders are queued)
+                    if task["type"] == "farm" and not unit.build_tasks:
+                        unit.farm_target = uid
 
     def _separate_units(self):
         units = [u for u in self.units.values() if u.hp > 0]
@@ -1042,9 +1239,17 @@ class GameState:
                 b_fixed = b.stats["speed"] <= 0
                 if a_fixed and b_fixed:
                     continue
-                # don't shove a builder away from structures at its site
+                # don't shove a builder away from structures at its site,
+                # a farmer off the farm it is working, or co-farmers of one
+                # field apart (the 2x2 field is tighter than MIN_SEPARATION)
                 if (a_fixed and self._builder_exempt(b, a)) or \
                         (b_fixed and self._builder_exempt(a, b)):
+                    continue
+                if (a_fixed and a.id == b.farm_target) or \
+                        (b_fixed and b.id == a.farm_target):
+                    continue
+                if (a.farm_target is not None
+                        and a.farm_target == b.farm_target):
                     continue
                 a_push = 0 if a_fixed else (push * 2 if b_fixed else push)
                 b_push = 0 if b_fixed else (push * 2 if a_fixed else push)
@@ -1056,6 +1261,26 @@ class GameState:
                 by = max(0, min(MAP_HEIGHT - 1, b.y + ny * b_push))
                 if self._passable(bx, by, b.z):
                     b.x, b.y = bx, by
+
+    def _resolve_farming(self):
+        """A worker standing on its farm accrues work; each full period pays
+        out. Leaving the farm pauses the work; any other order (or death)
+        drops it entirely via _clear_orders."""
+        for unit in self.units.values():
+            if unit.hp <= 0 or unit.farm_target is None:
+                continue
+            farm = self.units.get(unit.farm_target)
+            if not farm or farm.hp <= 0 or farm.z != unit.z:
+                unit.farm_target = None
+                unit.farm_progress = 0
+                continue
+            if self._farm_dist(unit, farm) > FARM_WORK_RANGE:
+                continue
+            unit.farm_progress += 1
+            if unit.farm_progress >= FARM_PERIOD:
+                unit.farm_progress = 0
+                self.resources[unit.owner] = (
+                    self.resources.get(unit.owner, 0) + FARM_YIELD)
 
     def _resolve_gathering(self):
         for unit in self.units.values():
@@ -1119,9 +1344,10 @@ class GameState:
             return
         best, best_dist = None, auto_range
         for other in self.units.values():
-            # never auto-target walls; they must be attacked deliberately
+            # never auto-target walls or (neutral) farms; they must be
+            # attacked deliberately
             if other.owner == unit.owner or other.hp <= 0 \
-                    or other.z != unit.z or other.type == "wall":
+                    or other.z != unit.z or other.type in ("wall", "farm"):
                 continue
             d = _dist(unit.x, unit.y, other.x, other.y)
             if d <= best_dist:
@@ -1132,8 +1358,75 @@ class GameState:
             self._record_shot(unit, best)
             self._note_hit(best)
 
+    def _resolve_beams(self):
+        """Advance active laser beams: chase the owner's target at
+        LASER_SPEED, vaporize every unit (any owner) within LASER_RADIUS on
+        the beam's level, and after LASER_DRILL_TIME ticks dwelling on one
+        tile, burn through to the level below (vaporizing water and
+        mountains in the crater and leaving a bore-hole tunnel at the
+        center). Moving off the tile pulls the beam back to the surface —
+        the bore hole stays where it was drilled."""
+        for beam in self.beams[:]:
+            if self.tick >= beam["expires"]:
+                self.beams.remove(beam)
+                self.events.append({"kind": "laser_expired",
+                                    "owner": beam["owner"],
+                                    "x": int(round(beam["x"])),
+                                    "y": int(round(beam["y"])),
+                                    "z": beam["z"]})
+                continue
+            dx = beam["tx"] - beam["x"]
+            dy = beam["ty"] - beam["y"]
+            dist = math.sqrt(dx * dx + dy * dy)
+            if dist > 1e-6:
+                step = min(LASER_SPEED, dist)
+                beam["x"] += dx / dist * step
+                beam["y"] += dy / dist * step
+            tile = (int(round(beam["x"])), int(round(beam["y"])))
+            if tile != beam["tile"]:
+                beam["tile"] = tile
+                beam["dwell"] = 0
+                beam["z"] = 0
+            else:
+                beam["dwell"] += 1
+            for u in self.units.values():
+                if (u.hp > 0 and u.z == beam["z"]
+                        and _dist(u.x, u.y, beam["x"], beam["y"])
+                        <= LASER_RADIUS):
+                    u.hp = 0
+                    u.death_cause = "laser"
+            if beam["dwell"] >= LASER_DRILL_TIME and beam["z"] > MIN_Z:
+                cx, cy = beam["tile"]
+                if beam["z"] == 0 and (cx, cy) in self.lakes:
+                    continue  # the beam boils the lake; it can't drill water
+                self._laser_drill(beam, cx, cy)
+
+    def _laser_drill(self, beam: dict, cx: int, cy: int):
+        nz = beam["z"] - 1
+        r = int(LASER_RADIUS)
+        disc = {(x, y)
+                for x in range(cx - r, cx + r + 1)
+                for y in range(cy - r, cy + r + 1)
+                if 0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT
+                and _dist(x, y, cx, cy) <= LASER_RADIUS}
+        if beam["z"] == 0:
+            self.mountains -= disc
+            self.lakes -= disc  # flashed to steam at the crater's edge
+        else:
+            self.water[beam["z"]] -= disc
+        self.water[nz] -= disc
+        self.dug[nz] |= disc
+        # the whole burned crater opens up — a deadly pit, not a tunnel
+        self.holes[beam["z"]] |= disc
+        beam["z"] = nz
+        beam["dwell"] = 0
+        self.terrain_dirty = True
+        self.events.append({"kind": "laser_through", "owner": beam["owner"],
+                            "x": cx, "y": cy, "z": nz})
+
     def _note_hit(self, target: Unit):
         """Throttled 'under attack' log event for the victim's owner."""
+        target.last_hit = self.tick
         last = self.hit_alerts.get(target.owner, -UNDER_ATTACK_COOLDOWN)
         if self.tick - last >= UNDER_ATTACK_COOLDOWN:
             self.hit_alerts[target.owner] = self.tick
@@ -1164,14 +1457,48 @@ class GameState:
         elif len(alive_players) == 0:
             self.winner = -1
 
+    def _activity(self, u: Unit) -> str | None:
+        """What the unit is doing right now, for the client's info panel.
+        Ordered by what actually runs first (digs precede a queued build)."""
+        if u.attack_target is not None:
+            target = self.units.get(u.attack_target)
+            if target:
+                return f"attacking {target.type} #{target.id}"
+        if u.dig_tasks:
+            kind = u.dig_tasks[0]["kind"]
+            extra = (f" (+{len(u.dig_tasks) - 1} queued)"
+                     if len(u.dig_tasks) > 1 else "")
+            return ("mining" if kind == "dig" else "tunnelling") + extra
+        if u.build_tasks:
+            return f"building {u.build_tasks[0]['type']}"
+        if u.gathering and u.gather_target is not None:
+            return "gathering"
+        if u.farm_target is not None:
+            return "farming"
+        return None
+
     def snapshot(self) -> dict:
+        # active workers per farm (in range, actually accruing work)
+        farmers: dict[int, int] = {}
+        for u in self.units.values():
+            if u.hp > 0 and u.farm_target is not None:
+                farm = self.units.get(u.farm_target)
+                if farm and self._farm_dist(u, farm) <= FARM_WORK_RANGE:
+                    farmers[u.farm_target] = farmers.get(u.farm_target, 0) + 1
         return {
             "type": "snapshot",
             "tick": self.tick,
             "units": [
                 {"id": u.id, "owner": u.owner, "type": u.type,
                  "x": round(u.x, 1), "y": round(u.y, 1), "z": u.z,
-                 "hp": u.hp}
+                 "hp": u.hp,
+                 **({"farmers": farmers.get(u.id, 0)}
+                    if u.type == "farm" else {}),
+                 **({"spent": u.id in self.spent_lasers}
+                    if u.type == "laser" else {}),
+                 **({"activity": act} if (act := self._activity(u)) else {}),
+                 **({"under_attack": True}
+                    if self.tick - u.last_hit <= UNDER_ATTACK_TICKS else {})}
                 for u in self.units.values()
             ],
             "resources": {str(pid): amt for pid, amt in self.resources.items()},
@@ -1184,6 +1511,22 @@ class GameState:
             ],
             "shots": self.shots,
             "events": self.events,
+            "beams": [
+                {"owner": b["owner"], "x": round(b["x"], 1),
+                 "y": round(b["y"], 1), "z": b["z"], "r": LASER_RADIUS}
+                for b in self.beams
+            ],
+            "laser": {
+                str(pid): {
+                    "unlocked": self._laser_unlocked(pid),
+                    "charges": sum(
+                        1 for u in self.units.values()
+                        if u.owner == pid and u.type == "laser" and u.hp > 0
+                        and u.id not in self.spent_lasers),
+                    "active": any(b["owner"] == pid for b in self.beams),
+                }
+                for pid in self.players
+            },
             "sites": [
                 {"owner": u.owner, "type": t["type"],
                  "x": t["x"], "y": t["y"], "z": t["z"],

@@ -1,10 +1,20 @@
 import os
 import sys
 
-from shared.messages import MAP_WIDTH, MAP_HEIGHT, UNIT_STATS
+from shared.messages import (MAP_WIDTH, MAP_HEIGHT, UNIT_STATS,
+                             FARM_YIELD, FARM_PERIOD, TICK_RATE,
+                             FARM_FOOTPRINT)
 
 UNIT_CHARS = {"worker": "o", "tank": "T", "range": "r",
-              "fort": "#", "wall": "="}
+              "fort": "#", "wall": "=", "farm": '"', "laser": "Ψ"}
+
+
+def unit_tiles(unit: dict) -> list[tuple[int, int]]:
+    """Grid cells a unit covers: one, except farms (a 2x2 field)."""
+    ux, uy = int(round(unit["x"])), int(round(unit["y"]))
+    if unit.get("type") == "farm":
+        return [(ux + dx, uy + dy) for dx, dy in FARM_FOOTPRINT]
+    return [(ux, uy)]
 # dig sites render as marked (denser) rock / a faint passage-to-be
 SITE_CHARS = {"dig": "▒", "dig_down": "↓", "dig_up": "↑"}
 ROCK = "^"  # same glyph as surface mountains, but dim
@@ -13,6 +23,10 @@ ROCK = "^"  # same glyph as surface mountains, but dim
 TUNNEL_DOWN = "↓"
 TUNNEL_UP = "↑"
 TUNNEL_BOTH = "↕"
+# laser bore hole: step on it and you fall down the shaft
+HOLE = "●"
+# dark red + dim, so it never reads as the red team's bright beam
+HOLE_COLOR = "\033[2;31m"
 
 PLAYER_COLORS = {
     1: "\033[94m",   # blue
@@ -28,6 +42,10 @@ PLAYER_HIGHLIGHT = {
     4: "\033[30;103m",
 }
 RESOURCE_COLOR = "\033[33m"
+# farms are neutral: always green, whoever built them
+FARM_COLOR = "\033[92m"
+FARM_HIGHLIGHT = "\033[30;102m"
+BEAM_COLOR = "\033[91m"  # space laser burn area
 LAKE_COLOR = "\033[34m"
 MOUNTAIN_COLOR = "\033[90m"
 # dim gray: rock fades toward the terminal background
@@ -49,6 +67,7 @@ class Renderer:
         self.dug: dict[int, set[tuple[int, int]]] = {}
         # tunnels[z] connect level z with level z - 1 (both ways)
         self.tunnels: dict[int, set[tuple[int, int]]] = {}
+        self.holes: dict[int, set[tuple[int, int]]] = {}
         self.water: dict[int, set[tuple[int, int]]] = {}
         self.event_log: list[str] = []
 
@@ -76,10 +95,25 @@ class Renderer:
                     f" ({ev.get('count')} tiles) {pos}{RESET}")
         if kind == "tunnel_destroyed":
             return f"{LAKE_COLOR}Tunnel {pos} destroyed by flood{RESET}"
+        laser_color = PLAYER_COLORS.get(ev.get("owner"), BEAM_COLOR)
+        if kind == "laser_fired":
+            return (f"{laser_color}{BOLD}SPACE LASER FIRED"
+                    f" {pos}{RESET}")
+        if kind == "laser_through":
+            return (f"{laser_color}Laser burns through to"
+                    f" z{ev.get('z')} ({ev.get('x')},{ev.get('y')}){RESET}")
+        if kind == "laser_expired":
+            return f"{laser_color}Laser beam expired {pos}{RESET}"
         if kind == "unit_died":
             utype = ev.get("type", "unit")
-            verb = "drowned" if ev.get("cause") == "flood" else (
-                "destroyed" if utype in ("fort", "wall") else "killed")
+            cause = ev.get("cause")
+            verb = ("drowned" if cause == "flood"
+                    else "vaporized" if cause == "laser"
+                    else "fell into abyss" if cause == "abyss"
+                    else "fell down a shaft" if cause == "fell"
+                    else "destroyed" if utype in ("fort", "wall", "farm",
+                                                  "laser")
+                    else "killed")
             if mine:
                 return f"\033[91mYour {utype} {verb} {pos}{RESET}"
             return f"\033[92mEnemy {utype} {verb} {pos}{RESET}"
@@ -104,6 +138,8 @@ class Renderer:
                     for z, cells in terrain.get("dug", {}).items()}
         self.tunnels = {int(z): {tuple(c) for c in cells}
                         for z, cells in terrain.get("tunnels", {}).items()}
+        self.holes = {int(z): {tuple(c) for c in cells}
+                      for z, cells in terrain.get("holes", {}).items()}
         self.water = {int(z): {tuple(c) for c in cells}
                       for z, cells in terrain.get("water", {}).items()}
 
@@ -158,6 +194,10 @@ class Renderer:
                 else:
                     grid[y][x] = TUNNEL_DOWN if (x, y) in down else TUNNEL_UP
                 color_grid[y][x] = BOLD
+        for x, y in self.holes.get(view_z, ()):
+            if 0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT:
+                grid[y][x] = HOLE
+                color_grid[y][x] = HOLE_COLOR
         # flood water covers whatever it swallowed (incl. tunnels)
         for x, y in self.water.get(view_z, ()):
             if 0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT:
@@ -170,12 +210,13 @@ class Renderer:
                 self._draw_shot(grid, color_grid, shot)
 
         for site in sites:
-            sx, sy = int(round(site["x"])), int(round(site["y"]))
-            if 0 <= sx < MAP_WIDTH and 0 <= sy < MAP_HEIGHT:
-                grid[sy][sx] = SITE_CHARS.get(
-                    site["type"], UNIT_CHARS.get(site["type"], "?"))
-                color_grid[sy][sx] = (
-                    PLAYER_COLORS.get(site["owner"], RESET) + DIM)
+            site_color = (FARM_COLOR if site["type"] == "farm"
+                          else PLAYER_COLORS.get(site["owner"], RESET))
+            for sx, sy in unit_tiles(site):
+                if 0 <= sx < MAP_WIDTH and 0 <= sy < MAP_HEIGHT:
+                    grid[sy][sx] = SITE_CHARS.get(
+                        site["type"], UNIT_CHARS.get(site["type"], "?"))
+                    color_grid[sy][sx] = site_color + DIM
 
         for node in nodes:
             nx, ny = int(round(node["x"])), int(round(node["y"]))
@@ -183,18 +224,43 @@ class Renderer:
                 grid[ny][nx] = "$"
                 color_grid[ny][nx] = RESOURCE_COLOR
 
-        for unit in units:
-            ux, uy = int(round(unit["x"])), int(round(unit["y"]))
-            if 0 <= ux < MAP_WIDTH and 0 <= uy < MAP_HEIGHT:
-                owner = unit["owner"]
-                is_selected = unit["id"] in selected_ids
+        # farms first, so mobile units (e.g. farmers) draw on top of the field
+        for unit in sorted(units, key=lambda u: u.get("type") != "farm"):
+            owner = unit["owner"]
+            is_selected = unit["id"] in selected_ids
+            if unit.get("type") == "farm":
+                c, hl = FARM_COLOR, FARM_HIGHLIGHT
+            else:
                 c = PLAYER_COLORS.get(owner, RESET)
-                char = UNIT_CHARS.get(unit.get("type", "worker"), "o")
-                grid[uy][ux] = char
-                if is_selected:
-                    color_grid[uy][ux] = PLAYER_HIGHLIGHT.get(owner, "\033[7m")
-                else:
-                    color_grid[uy][ux] = c
+                hl = PLAYER_HIGHLIGHT.get(owner, "\033[7m")
+            char = UNIT_CHARS.get(unit.get("type", "worker"), "o")
+            for ux, uy in unit_tiles(unit):
+                if 0 <= ux < MAP_WIDTH and 0 <= uy < MAP_HEIGHT:
+                    grid[uy][ux] = char
+                    color_grid[uy][ux] = hl if is_selected else c
+
+        # the beam draws over everything — whatever is inside is being
+        # vaporized anyway. It shows on every level it has burned through
+        # (dim) down to the one it is burning now (bright), never below
+        for beam in snap.get("beams", []):
+            beam_z = beam.get("z", 0)
+            if view_z < beam_z:
+                continue
+            owner_color = PLAYER_COLORS.get(beam.get("owner"), BEAM_COLOR)
+            burning_here = view_z == beam_z
+            fill = owner_color if burning_here else owner_color + DIM
+            bx, by, r = beam["x"], beam["y"], beam.get("r", 5)
+            for y in range(int(by - r), int(by + r) + 2):
+                for x in range(int(bx - r), int(bx + r) + 2):
+                    if not (0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT):
+                        continue
+                    if (x - bx) ** 2 + (y - by) ** 2 <= r * r:
+                        grid[y][x] = "░"
+                        color_grid[y][x] = fill
+            cx, cy = int(round(bx)), int(round(by))
+            if 0 <= cx < MAP_WIDTH and 0 <= cy < MAP_HEIGHT:
+                grid[cy][cx] = "X"
+                color_grid[cy][cx] = owner_color + BOLD
 
         sidebar = self._build_sidebar(all_units, nodes, sites,
                                       cursor_x, cursor_y, selected_ids,
@@ -238,7 +304,18 @@ class Renderer:
         my_res = resources.get(str(self.player_id), 0)
         my_units = sum(1 for u in all_units if u["owner"] == self.player_id)
         out.append(f" Tick: {tick}  Resources: {my_res}  Units: {my_units}")
-        out.append(f"  Room: {self.room_name}  Ping: {self.latency_ms}ms\033[K\n")
+        out.append(f"  Room: {self.room_name}  Ping: {self.latency_ms}ms")
+        laser = (snap.get("laser") or {}).get(str(self.player_id)) or {}
+        if laser.get("active"):
+            out.append(f"  {BEAM_COLOR}{BOLD}LASER ACTIVE{RESET}"
+                       f" {DIM}[L] steers it to the cursor{RESET}")
+        elif laser.get("charges"):
+            out.append(f"  {BEAM_COLOR}{BOLD}LASER READY{RESET}"
+                       f" {DIM}[L] fires at cursor (60s, one shot){RESET}")
+        elif laser.get("unlocked"):
+            out.append(f"  {BEAM_COLOR}space laser unlocked{RESET}"
+                       f" {DIM}[O] builds one (500){RESET}")
+        out.append("\033[K\n")
 
         sel_count = len(selected_ids)
         out.append(f" {BOLD}Level: z{view_z}{RESET}  Selected: {sel_count}"
@@ -246,7 +323,7 @@ class Renderer:
 
         out.append(f" {DIM}[WASD]cursor [Space]select [F]area [E]clear [M]move [X]attack [G]gather [Q]quit{RESET}\033[K\n")
         out.append(f" {DIM}build: [B]worker [T]tank [R]range [C]fort [V]wall"
-                   f" (fort/wall: selected worker builds; tank/range need a fort near){RESET}\033[K\n")
+                   f" [P]farm [O]space laser{RESET}\033[K\n")
         out.append(f" {DIM}depth: [ down / ] up view  [N]mine rock"
                    f"  [Z]tunnel down/descend {TUNNEL_DOWN}"
                    f"  [U]tunnel up/ascend {TUNNEL_UP}{RESET}\033[K\n")
@@ -291,15 +368,17 @@ class Renderer:
 
         unit = next((u for u in all_units
                      if u.get("z", 0) == view_z
-                     and int(round(u["x"])) == cursor_x
-                     and int(round(u["y"])) == cursor_y), None)
+                     and (cursor_x, cursor_y) in unit_tiles(u)), None)
         node = next((n for n in nodes
                      if int(round(n["x"])) == cursor_x
                      and int(round(n["y"])) == cursor_y), None)
 
         cur = (cursor_x, cursor_y)
         terrain = None
-        if cur in self.water.get(view_z, ()):
+        if cur in self.holes.get(view_z, ()):
+            terrain = (f"{HOLE_COLOR}Laser bore hole — units that step in"
+                       f" fall to their death{RESET}")
+        elif cur in self.water.get(view_z, ()):
             terrain = (f"{LAKE_COLOR}Water — impassable; drain it from"
                        f" the level below{RESET}")
         elif (cur in self.tunnels.get(view_z, ())
@@ -323,15 +402,33 @@ class Renderer:
             c = PLAYER_COLORS.get(owner, RESET)
             who = "you" if owner == self.player_id else f"enemy P{owner}"
             utype = unit.get("type", "worker")
-            lines.append(f"{c}{utype.capitalize()} #{unit['id']} ({who}){RESET}")
+            if utype == "farm":
+                lines.append(f"{FARM_COLOR}Farm #{unit['id']} (neutral){RESET}")
+            else:
+                lines.append(f"{c}{utype.capitalize()} #{unit['id']} ({who}){RESET}")
             lines.append(f"HP: {unit['hp']}/{UNIT_STATS[utype]['hp']}")
             lines.append(f"Pos: ({int(round(unit['x']))},{int(round(unit['y']))})")
+            if activity := unit.get("activity"):
+                lines.append(f"Status: {activity}")
+            if unit.get("under_attack"):
+                lines.append(f"\033[91m{BOLD}UNDER ATTACK{RESET}")
+            if utype == "farm":
+                n = unit.get("farmers", 0)
+                per = FARM_PERIOD // TICK_RATE
+                lines.append(
+                    f"Farmers: {n} (each +{FARM_YIELD}/{per}s;"
+                    f" [G] sends workers)")
+            elif utype == "laser":
+                if unit.get("spent"):
+                    lines.append(f"{DIM}Charge spent — build another{RESET}")
+                else:
+                    lines.append(f"{BEAM_COLOR}{BOLD}CHARGED{RESET}"
+                                 f" — [L] fires at cursor")
         elif node:
             lines.append(f"{RESOURCE_COLOR}Resource node #{node['id']}{RESET}")
             lines.append(f"Amount: {node['amount']}")
         elif site := next((s for s in sites
-                           if int(round(s["x"])) == cursor_x
-                           and int(round(s["y"])) == cursor_y), None):
+                           if (cursor_x, cursor_y) in unit_tiles(s)), None):
             owner = site["owner"]
             c = PLAYER_COLORS.get(owner, RESET)
             who = "you" if owner == self.player_id else f"enemy P{owner}"

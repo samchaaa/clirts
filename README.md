@@ -64,9 +64,10 @@ Rooms hold up to 4 players. You start with 5 workers in a corner and
 | `E` | Clear selection |
 | `M` | Move selected units to cursor (auto-routes through tunnels if the cursor is on another z-level) |
 | `X` | Attack the enemy under the cursor |
-| `G` | Gather from the resource node (`$`) under the cursor |
+| `G` | Gather from the resource node (`$`) under the cursor — or, on a friendly farm (`"`), send selected workers to farm it |
 | `B` / `T` / `R` | Build worker / tank / range at cursor |
-| `C` / `V` | Order the selected worker to build a fort / wall at cursor |
+| `C` / `V` / `P` / `O` | Order the selected worker to build a fort / wall / farm / space laser at cursor |
+| `L` | Fire the space laser at the cursor (needs a charged dish) — press again to steer the beam |
 | `[` / `]` | View one z-level down / up (z0 to z-3) |
 | `N` | Order a selected worker to mine out the solid tile at cursor |
 | `Z` | Tunnel down at cursor (or descend an existing tunnel `↓`) |
@@ -78,7 +79,9 @@ A sidebar right of the map shows details for whatever is under the cursor
 event log (kills, attacks, floods, finished digs, depleted nodes, …).
 
 **Map legend:** `o` worker · `T` tank · `r` range · `#` fort · `=` wall ·
-`$` resource node · `~` lake / flood water · `^` mountain (surface) or solid
+`"` farm (green 2x2 field, neutral) · `Ψ` space laser dish ·
+`░ X` active laser burn area + beam center (team color) ·
+`●` laser bore pit (fall = death) · `$` resource node · `~` lake / flood water · `^` mountain (surface) or solid
 rock (underground, dim) · `↓` tunnel down · `↑` tunnel up · `↕` both ·
 highlighted (black on your color) = selected ·
 `* x` projectile tracer + impact · colors identify players
@@ -152,13 +155,65 @@ apply to the level you are viewing, and only units on that level respond.
 | Range | `r` | 150 | 80 | 20 | 5 | 1.0 | Auto-fires in radius, every 3.75 ticks |
 | Fort | `#` | 400 | 500 | 25 | 6 | — | Building; auto-fires in radius, every 5th tick |
 | Wall | `=` | 35 | 200 | — | — | — | Building; blocks all unit movement |
+| Farm | `"` | 100 | 100 | — | — | — | Neutral green 2x2 field — each worker standing in it earns 5 every 10 s, forever |
+| Space laser | `Ψ` | 500 | 300 | — | — | — | Endgame superweapon dish; one shot each (see below) |
 
-Buildings (fort, wall) are constructed on site: select a worker, put the
-cursor where you want the building, and press `C`/`V` — the worker walks
-there and builds it (forts take 6 s of construction, walls 1 s; the site
-shows as a dim glyph with progress in the sidebar). Cost is refunded if the
-order is cancelled or the worker dies on the way. Tanks and ranges must be built within 4 tiles of one of
-your forts.
+Buildings (fort, wall, farm) are constructed on site: select a worker, put
+the cursor where you want the building, and press `C`/`V`/`P` — the worker
+walks there and builds it (forts take 6 s of construction, walls 1 s, farms
+5 s; the site shows as a dim glyph with progress in the sidebar). Cost is
+refunded if the order is cancelled or the worker dies on the way. Tanks and
+ranges must be built within 4 tiles of one of your forts.
+
+**Farming** is the infinite (but slow) economy: resource nodes run dry, farms
+never do. A farm is a green 2x2 field of `"` anchored at the build cursor
+(extending one tile right and down; every tile must be clear of buildings
+and water). Siting it on mountain tiles works: the builder first mines the
+rock flat (`▒`), then constructs. The finished farm yields nothing on its
+own — a worker must stand in the field working it, and the builder
+automatically stays on as its first farmer. Each working farmer earns their
+owner 5 resources every 10 s of continuous work (versus 50/s gathering from
+a node); farmers spread out across the field, one per tile, and all earn.
+The moment a farmer walks off, dies, or takes any other order (move, build,
+dig, …) the income stops; step back on to resume. Farms are surface-only —
+crops need sunlight — and **neutral**: any player's workers can farm any
+farm with `G`, whoever built it, and the income goes to the farmer's owner.
+Nothing ever auto-targets a farm, but you can raze one manually with `X`.
+
+## Space laser
+
+The endgame superweapon. Building the `Ψ` dish (`O`, 500 resources, 30 s of
+construction, surface-only) unlocks per player only once **all three**
+conditions hold when the order is placed:
+
+1. you have completed every other building type at least once (fort, wall,
+   and farm — destroyed ones still count),
+2. one of your units has reached the lowest level (z-3), however it got
+   there, and
+3. no resource node remains anywhere on the surface, no matter who
+   exhausted them.
+
+Each dish holds **one charge**. Press `L` to fire: the beam comes down at
+your cursor and then chases it — but at only 1 tile per 3 s, far slower than
+the cursor, so you steer a slow burning line across the map. The beam
+vaporizes **everything** (yours included: units, buildings, farms) within a
+5-tile radius on the level it is burning, and stays up for 60 seconds; then
+it is gone for good and that dish is spent — build another for another shot.
+
+Dwell the beam on one spot for 10 s and it burns through to the level below:
+mountains and water in the crater flash to steam, a 5-tile-radius cavern
+opens on the next level down, and the beam now burns that level — dwell
+again to go deeper, all the way to z-3. Moving the beam off its tile pulls
+it back to the surface. The burn area is visible on every level the beam has
+burned through — dim above, bright on the level it is burning now, never
+below. There is no hiding underground from a patient laser.
+
+Each burn-through turns the **entire burned crater** — the full 5-tile
+radius — into a bore pit (`●`, dark red) on every level it pierced. Bore
+pits are not tunnels: any unit that steps in falls down the shaft and dies —
+"fell down a shaft", or "fell into abyss" if the shaft goes all the way to
+z-3. Auto-routed paths steer around them, but a careless direct move order
+(or a battle shove) will send units in. Nothing can be built over one.
 
 Fort and range shots draw projectile tracers. Auto-fire never chases and
 skips walls; shots pass over walls (no line-of-sight), so walls stop melee

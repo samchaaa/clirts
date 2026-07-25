@@ -30,6 +30,8 @@ class Command(str, Enum):
     DIG = "dig"
     DIG_DOWN = "dig_down"
     DIG_UP = "dig_up"
+    FARM = "farm"
+    LASER = "laser"
 
 
 MAP_WIDTH = 120
@@ -66,14 +68,41 @@ UNIT_STATS = {
     "wall":   {"hp": 200, "damage": 0, "range": 0.0, "speed": 0.0,
                "cost": 35, "auto_range": 0.0, "reload": 1,
                "build_time": 10},
+    "farm":   {"hp": 100, "damage": 0, "range": 0.0, "speed": 0.0,
+               "cost": 100, "auto_range": 0.0, "reload": 1,
+               "build_time": 50},
+    "laser":  {"hp": 300, "damage": 0, "range": 0.0, "speed": 0.0,
+               "cost": 500, "auto_range": 0.0, "reload": 1,
+               "build_time": 300},
 }
-BUILDINGS = ("fort", "wall")  # placed as a site; a worker walks there to build
+# placed as a site; a worker walks there to build
+BUILDINGS = ("fort", "wall", "farm", "laser")
 # tank/range must be built within this distance of a friendly fort
 FORT_BUILD_RADIUS = 4.0
 # how close a worker must be to a site to finish construction
 BUILD_RANGE = 1.5
 # units cannot move closer than this to a wall
 WALL_RADIUS = 0.9
+
+# --- farming ---------------------------------------------------------------
+# farms yield a slow but infinite income, unlike depletable nodes — but only
+# while a worker stands on the farm working it. Any other order (move,
+# build, dig, …) or death stops the work. Crops need sunlight: surface only.
+FARM_YIELD = 5        # resources paid per completed work period
+FARM_PERIOD = 100     # ticks of work per payout (5 per 10 s at 10 Hz)
+FARM_WORK_RANGE = 1.5 # max distance from the nearest field tile to work it
+# a farm is a 2x2 field; offsets from its anchor (the build cursor tile)
+FARM_FOOTPRINT = ((0, 0), (1, 0), (0, 1), (1, 1))
+
+# --- space laser -----------------------------------------------------------
+# the endgame superweapon. Building one unlocks per player only once they
+# have (a) built every other building type, (b) had a unit reach the lowest
+# z-level, and (c) every surface resource node is exhausted (global). Each
+# building holds ONE charge: firing spends it for good.
+LASER_RADIUS = 5.0      # circular kill radius around the beam center
+LASER_SPEED = 1 / 30    # beam chase speed: 1 tile per 3 s (cursor is faster)
+LASER_DURATION = 600    # ticks the beam burns after triggering (60 s)
+LASER_DRILL_TIME = 100  # ticks dwelling on one tile to burn down a z-level
 
 # --- terrain ---------------------------------------------------------------
 # random blobs generated per room; spawn corners are kept clear
