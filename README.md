@@ -6,6 +6,16 @@ server (deployed on Fly.io). Fight on the surface — or dig Dwarf
 Fortress-style z-levels beneath it, mine buried riches, and drain lakes onto
 your enemies.
 
+---
+*Human note:*
+- *This is hosted live at wss://cli-rts.fly.dev/play (for now).*
+- *Venmo graciously accepted to keep servers running: @samchaaa*
+- *Currently everything is just public (no private rooms / password-protection)... so be nice!*
+- *Feel free to fork your own version (I may be unresponsive to PR's).*
+- *There's no protection for cheating / exploits... so be nice.*
+---
+
+
 ```text
 Player A terminal ─┐
 Player B terminal ─┼── wss://cli-rts.fly.dev/play ── authoritative server
