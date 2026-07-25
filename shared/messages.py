@@ -89,15 +89,14 @@ MOUNTAIN_ROF_FACTOR = 2.0
 
 # --- z-levels ----------------------------------------------------------------
 # the surface is z0; levels z-1..MIN_Z are solid rock until workers dig them
-# out. digging down leaves a hole (descend only); digging up leaves a ladder
-# (ascend only). holes and ladders are neutral — any player's units may use
-# them.
+# out. digging down or up leaves a tunnel connecting the two levels, passable
+# in both directions. tunnels are neutral — any player's units may use them.
 MIN_Z = -3
 DIG_TIME = 15         # ticks for a worker to mine out one solid tile
-DIG_DOWN_TIME = 30    # ticks to dig a hole down to the next level
-DIG_UP_TIME = 30      # ticks to build a ladder up to the next level
+DIG_DOWN_TIME = 30    # ticks to dig a tunnel down to the next level
+DIG_UP_TIME = 30      # ticks to dig a tunnel up to the next level
 DIG_RANGE = 1.5       # how close a worker must be to mine a tile
-TRANSIT_RANGE = 0.75  # how close a unit must be to a hole/ladder to use it
+TRANSIT_RANGE = 0.75  # how close a unit must be to a tunnel to use it
 # richer resources deeper down: z -> (node count, amount per node);
 # underground nodes stay hidden until the tile holding them is mined out
 UNDERGROUND_NODES = {-1: (10, 800), -2: (14, 1500), -3: (18, 2500)}

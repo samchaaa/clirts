@@ -169,7 +169,9 @@ class GameClient:
                     "target": [self.cursor_x, self.cursor_y],
                     "z": self.view_z,
                 })
-                self.renderer.status_message = f"Move {len(self.selected_ids)} units to ({self.cursor_x},{self.cursor_y})"
+                self.renderer.status_message = (
+                    f"Move {len(self.selected_ids)} units to "
+                    f"({self.cursor_x},{self.cursor_y}) z{self.view_z}")
         elif k == 'x':
             if self.selected_ids:
                 target = self._unit_at_cursor()

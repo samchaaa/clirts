@@ -62,15 +62,15 @@ Rooms hold up to 4 players. You start with 5 workers in a corner and
 | `Space` | Select / deselect the unit under the cursor |
 | `F` | Select all your units near the cursor |
 | `E` | Clear selection |
-| `M` | Move selected units to cursor |
+| `M` | Move selected units to cursor (auto-routes through tunnels if the cursor is on another z-level) |
 | `X` | Attack the enemy under the cursor |
 | `G` | Gather from the resource node (`$`) under the cursor |
 | `B` / `T` / `R` | Build worker / tank / range at cursor |
 | `C` / `V` | Order the selected worker to build a fort / wall at cursor |
 | `[` / `]` | View one z-level down / up (z0 to z-3) |
 | `N` | Order a selected worker to mine out the solid tile at cursor |
-| `Z` | Dig down at cursor (or descend an existing hole `>`) |
-| `U` | Dig up at cursor (or ascend an existing ladder `<`) |
+| `Z` | Tunnel down at cursor (or descend an existing tunnel `↓`) |
+| `U` | Tunnel up at cursor (or ascend an existing tunnel `↑`) |
 | `Q` | Quit |
 
 A sidebar right of the map shows details for whatever is under the cursor
@@ -79,7 +79,7 @@ event log (kills, attacks, floods, finished digs, depleted nodes, …).
 
 **Map legend:** `o` worker · `T` tank · `r` range · `#` fort · `=` wall ·
 `$` resource node · `~` lake / flood water · `^` mountain (surface) or solid
-rock (underground, dim) · `>` hole down · `<` ladder up ·
+rock (underground, dim) · `↓` tunnel down · `↑` tunnel up · `↕` both ·
 highlighted (black on your color) = selected ·
 `* x` projectile tracer + impact · colors identify players
 (blue/red/green/yellow by join order).
@@ -101,18 +101,23 @@ of solid rock (dim `^`; tiles marked for mining show `▒` in the
 digger's color). Press `[` / `]` to view a level down / up; commands
 apply to the level you are viewing, and only units on that level respond.
 
-- **Dig down** (`Z`): a selected worker walks to the cursor tile and digs a
-  hole (`>`), then drops to the level below. The hole is descend-only.
+- **Tunnel down** (`Z`): a selected worker walks to the cursor tile and digs
+  a tunnel to the level below, then drops through it.
 - **Mine** (`N`): a selected worker digs out the solid tile at the cursor
   (on the surface, this levels a mountain tile instead). Press it over
   several tiles to queue jobs; with multiple workers selected, jobs spread
   across the ones with the shortest queues.
-- **Dig up** (`U`): a worker underground builds a ladder (`<`) at the cursor
-  and climbs to the level above. The ladder is ascend-only.
+- **Tunnel up** (`U`): a worker underground digs a tunnel to the level above
+  and climbs through it.
+- A tunnel connects two levels and is passable **both ways**, no matter
+  which direction it was dug from. It renders as `↓` on its upper level and
+  `↑` on its lower one (`↕` where two shafts share a tile).
 - **Flooding**: digging up into a lakebed breaches it — the lake drains
   tile-for-tile into the tunnels. Water (`~`) flood-fills outward from the
-  breach and is permanently impassable; **units caught in it drown**. The
-  breaching worker climbs out first, onto the freshly drained lakebed. A
+  breach and is permanently impassable; **units caught in it drown**, and
+  **tunnels on flooded tiles are destroyed** (including the breach tunnel
+  itself — the event log reports each loss). The breaching worker climbs
+  out first, onto the freshly drained lakebed. A
   small lake over a big tunnel network drains completely (leaving walkable
   lakebed on the surface); a big lake over a small network floods it
   entirely and keeps the rest of its water. Breaching an already-flooded
@@ -123,10 +128,15 @@ apply to the level you are viewing, and only units on that level respond.
   until drained. Drain a lake by tunneling on the level *below* it and
   digging up (`U`) into its floor — the water falls through, flooding the
   level below tile-for-tile, and the drained cavern (and any `$` in it)
-  becomes walkable. Dropping through a hole into water drowns the unit,
+  becomes walkable. Dropping through a tunnel into water drowns the unit,
   and z-3 lakes can't be drained (there's nothing below).
-- Holes and ladders are **neutral**: any unit — including the enemy's — can
-  press `Z` on a hole or `U` on a ladder to use it.
+- Tunnels are **neutral**: any unit — including the enemy's — can press `Z`
+  or `U` on one to use it.
+- **Cross-level move orders auto-route**: select units, view another level
+  with `[` / `]`, and press `M` — units not already on that level find the
+  cheapest chain of tunnels to it and walk there on their own, hugging the
+  dug passages. If no walkable chain of tunnels connects the two levels the
+  order is rejected. A tunnel that floods away mid-route triggers a replan.
 - Underground resource nodes are richer the deeper you go (z-1: 800 each,
   z-2: 1500, z-3: 2500) but stay **hidden until you mine the tile** holding
   them.

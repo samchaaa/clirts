@@ -6,10 +6,13 @@ from shared.messages import MAP_WIDTH, MAP_HEIGHT, UNIT_STATS
 UNIT_CHARS = {"worker": "o", "tank": "T", "range": "r",
               "fort": "#", "wall": "="}
 # dig sites render as marked (denser) rock / a faint passage-to-be
-SITE_CHARS = {"dig": "▒", "dig_down": ">", "dig_up": "<"}
+SITE_CHARS = {"dig": "▒", "dig_down": "↓", "dig_up": "↑"}
 ROCK = "^"  # same glyph as surface mountains, but dim
-HOLE = ">"
-LADDER = "<"
+# one tunnel connects two levels and is passable both ways; the glyph
+# shows where it leads from the level you are viewing
+TUNNEL_DOWN = "↓"
+TUNNEL_UP = "↑"
+TUNNEL_BOTH = "↕"
 
 PLAYER_COLORS = {
     1: "\033[94m",   # blue
@@ -44,8 +47,8 @@ class Renderer:
         self.lakes: set[tuple[int, int]] = set()
         self.mountains: set[tuple[int, int]] = set()
         self.dug: dict[int, set[tuple[int, int]]] = {}
-        self.holes: dict[int, set[tuple[int, int]]] = {}
-        self.ladders: dict[int, set[tuple[int, int]]] = {}
+        # tunnels[z] connect level z with level z - 1 (both ways)
+        self.tunnels: dict[int, set[tuple[int, int]]] = {}
         self.water: dict[int, set[tuple[int, int]]] = {}
         self.event_log: list[str] = []
 
@@ -71,6 +74,8 @@ class Renderer:
         if kind == "flood":
             return (f"{LAKE_COLOR}Flood! z{ev.get('z')}"
                     f" ({ev.get('count')} tiles) {pos}{RESET}")
+        if kind == "tunnel_destroyed":
+            return f"{LAKE_COLOR}Tunnel {pos} destroyed by flood{RESET}"
         if kind == "unit_died":
             utype = ev.get("type", "unit")
             verb = "drowned" if ev.get("cause") == "flood" else (
@@ -86,9 +91,10 @@ class Renderer:
         if kind == "dig_queue_done":
             return f"Mining queue done {pos}"
         if kind == "dug_down":
-            return f"Dug down to z{ev.get('z')} ({ev.get('x')},{ev.get('y')})"
+            return (f"Tunnel down to z{ev.get('z')}"
+                    f" ({ev.get('x')},{ev.get('y')})")
         if kind == "dug_up":
-            return f"Ladder up to z{ev.get('z')} ({ev.get('x')},{ev.get('y')})"
+            return f"Tunnel up to z{ev.get('z')} ({ev.get('x')},{ev.get('y')})"
         return None
 
     def set_terrain(self, terrain: dict):
@@ -96,10 +102,8 @@ class Renderer:
         self.mountains = {tuple(c) for c in terrain.get("mountains", [])}
         self.dug = {int(z): {tuple(c) for c in cells}
                     for z, cells in terrain.get("dug", {}).items()}
-        self.holes = {int(z): {tuple(c) for c in cells}
-                      for z, cells in terrain.get("holes", {}).items()}
-        self.ladders = {int(z): {tuple(c) for c in cells}
-                        for z, cells in terrain.get("ladders", {}).items()}
+        self.tunnels = {int(z): {tuple(c) for c in cells}
+                        for z, cells in terrain.get("tunnels", {}).items()}
         self.water = {int(z): {tuple(c) for c in cells}
                       for z, cells in terrain.get("water", {}).items()}
 
@@ -145,15 +149,16 @@ class Renderer:
                 if 0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT:
                     grid[y][x] = " "
                     color_grid[y][x] = ""
-        for x, y in self.holes.get(view_z, ()):
+        down = self.tunnels.get(view_z, set())
+        up = self.tunnels.get(view_z + 1, set())
+        for x, y in down | up:
             if 0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT:
-                grid[y][x] = HOLE
+                if (x, y) in down and (x, y) in up:
+                    grid[y][x] = TUNNEL_BOTH
+                else:
+                    grid[y][x] = TUNNEL_DOWN if (x, y) in down else TUNNEL_UP
                 color_grid[y][x] = BOLD
-        for x, y in self.ladders.get(view_z, ()):
-            if 0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT:
-                grid[y][x] = LADDER
-                color_grid[y][x] = BOLD
-        # flood water covers whatever it swallowed (incl. holes/ladders)
+        # flood water covers whatever it swallowed (incl. tunnels)
         for x, y in self.water.get(view_z, ()):
             if 0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT:
                 grid[y][x] = "~"
@@ -243,7 +248,8 @@ class Renderer:
         out.append(f" {DIM}build: [B]worker [T]tank [R]range [C]fort [V]wall"
                    f" (fort/wall: selected worker builds; tank/range need a fort near){RESET}\033[K\n")
         out.append(f" {DIM}depth: [ down / ] up view  [N]mine rock"
-                   f"  [Z]dig down/descend {HOLE}  [U]dig up/ascend {LADDER}{RESET}\033[K\n")
+                   f"  [Z]tunnel down/descend {TUNNEL_DOWN}"
+                   f"  [U]tunnel up/ascend {TUNNEL_UP}{RESET}\033[K\n")
 
         if winner is not None:
             if winner == self.player_id:
@@ -296,10 +302,13 @@ class Renderer:
         if cur in self.water.get(view_z, ()):
             terrain = (f"{LAKE_COLOR}Water — impassable; drain it from"
                        f" the level below{RESET}")
-        elif cur in self.holes.get(view_z, ()):
-            terrain = f"{BOLD}Hole down — [Z] descends{RESET}"
-        elif cur in self.ladders.get(view_z, ()):
-            terrain = f"{BOLD}Ladder up — [U] ascends{RESET}"
+        elif (cur in self.tunnels.get(view_z, ())
+                and cur in self.tunnels.get(view_z + 1, ())):
+            terrain = f"{BOLD}Tunnel shaft — [Z] descends, [U] ascends{RESET}"
+        elif cur in self.tunnels.get(view_z, ()):
+            terrain = f"{BOLD}Tunnel down — [Z] descends{RESET}"
+        elif cur in self.tunnels.get(view_z + 1, ()):
+            terrain = f"{BOLD}Tunnel up — [U] ascends{RESET}"
         elif view_z < 0 and cur not in self.dug.get(view_z, ()):
             terrain = (f"{MOUNTAIN_COLOR}Solid rock —"
                        f" [N] sends a worker to mine{RESET}")

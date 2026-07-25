@@ -1,3 +1,4 @@
+import heapq
 import math
 import random
 from collections import deque
@@ -45,8 +46,12 @@ class Unit:
     z: int = 0
     # FIFO of {"kind": "dig"|"down"|"up", "x", "y", "z", "progress"}
     dig_tasks: list[dict] = field(default_factory=list)
-    # {"x", "y", "dz"}: walk to an existing hole/ladder and change level
+    # {"x", "y", "dz"}: walk to an existing tunnel and change level
     transit: dict | None = None
+    # multi-leg cross-level move plan; each leg is
+    # {"x", "y", "z", "dz"}: walk to (x, y) on level z, then change level by
+    # dz (dz == 0 marks the final destination leg). Built by _plan_route.
+    route: list[dict] = field(default_factory=list)
     # set when something other than combat kills the unit (e.g. "flood")
     death_cause: str | None = None
 
@@ -89,11 +94,10 @@ class GameState:
     # underground levels are solid except tiles in dug[z]
     dug: dict[int, set[tuple[int, int]]] = field(
         default_factory=lambda: {z: set() for z in range(MIN_Z, 0)})
-    # holes[z] lead down from level z; ladders[z] lead up from level z
-    holes: dict[int, set[tuple[int, int]]] = field(
+    # tunnels[z] connect level z with level z - 1; any unit may pass
+    # either way (dig down and dig up both produce one)
+    tunnels: dict[int, set[tuple[int, int]]] = field(
         default_factory=lambda: {z: set() for z in range(MIN_Z + 1, 1)})
-    ladders: dict[int, set[tuple[int, int]]] = field(
-        default_factory=lambda: {z: set() for z in range(MIN_Z, 0)})
     # flooded tunnel tiles (dug but impassable); filled by lake breaches
     water: dict[int, set[tuple[int, int]]] = field(
         default_factory=lambda: {z: set() for z in range(MIN_Z, 0)})
@@ -179,9 +183,8 @@ class GameState:
         return {"lakes": sorted(self.lakes),
                 "mountains": sorted(self.mountains),
                 "dug": {str(z): sorted(c) for z, c in self.dug.items()},
-                "holes": {str(z): sorted(c) for z, c in self.holes.items()},
-                "ladders": {str(z): sorted(c)
-                            for z, c in self.ladders.items()},
+                "tunnels": {str(z): sorted(c)
+                            for z, c in self.tunnels.items()},
                 "water": {str(z): sorted(c)
                           for z, c in self.water.items()}}
 
@@ -323,6 +326,7 @@ class GameState:
         unit.gathering = False
         unit.gather_target = None
         unit.transit = None
+        unit.route = []
         if not keep_build:
             self._cancel_build(unit)
         if not keep_dig:
@@ -339,26 +343,160 @@ class GameState:
             return False
         if not self._passable(tx, ty, z):
             return False
-        movable = [uid for uid in unit_ids
-                   if (u := self.units.get(uid))
-                   and u.z == z and u.stats["speed"] > 0]
-        i = 0
-        for uid in movable:
-            unit = self.units.get(uid)
-            if unit and unit.owner == player_id and unit.hp > 0:
-                # fan group moves out into a grid formation so units
-                # don't converge onto the same cell
-                side = max(1, math.ceil(math.sqrt(len(movable))))
-                ox = (i % side - (side - 1) / 2) * MIN_SEPARATION
-                oy = (i // side - (side - 1) / 2) * MIN_SEPARATION
-                fx = max(0, min(MAP_WIDTH - 1, tx + ox))
-                fy = max(0, min(MAP_HEIGHT - 1, ty + oy))
-                if not self._passable(fx, fy, z):
-                    fx, fy = tx, ty
+        owned = [u for uid in unit_ids
+                 if (u := self.units.get(uid))
+                 and u.owner == player_id and u.hp > 0 and u.stats["speed"] > 0]
+        same = [u for u in owned if u.z == z]
+        cross = [u for u in owned if u.z != z]
+        ok = False
+        # same-level units fan out into a grid formation so they don't
+        # converge onto the same cell
+        side = max(1, math.ceil(math.sqrt(len(same)))) if same else 1
+        for i, unit in enumerate(same):
+            ox = (i % side - (side - 1) / 2) * MIN_SEPARATION
+            oy = (i // side - (side - 1) / 2) * MIN_SEPARATION
+            fx = max(0, min(MAP_WIDTH - 1, tx + ox))
+            fy = max(0, min(MAP_HEIGHT - 1, ty + oy))
+            if not self._passable(fx, fy, z):
+                fx, fy = tx, ty
+            self._clear_orders(unit)
+            unit.target = (fx, fy)
+            ok = True
+        # units on another level auto-route through the nearest tunnels
+        for unit in cross:
+            route = self._plan_route(unit, int(round(tx)), int(round(ty)), z)
+            if route:
                 self._clear_orders(unit)
-                unit.target = (fx, fy)
-                i += 1
-        return True
+                unit.route = route
+                ok = True
+        return ok
+
+    def _plan_route(self, unit: Unit, tx: int, ty: int,
+                    tz: int) -> list[dict] | None:
+        """Plan a walkable path from the unit to (tx, ty, tz) through the
+        tunnel network. A Dijkstra chooses the cheapest chain of tunnels,
+        with each hop's cost being the actual on-level A* walking distance —
+        so a tunnel the unit can't reach on foot is never chosen. Returns a
+        list of legs {"path": [(x, y)...], "z", "dz"} (dz == 0 is the final
+        destination leg; the unit walks each leg's waypoints then changes
+        level by dz), or None if no walkable route exists."""
+        st = (int(round(unit.x)), int(round(unit.y)))
+        if unit.z == tz:
+            r = self._grid_path(tz, st, (tx, ty))
+            return None if r is None else [
+                {"path": r[0] or [(tx, ty)], "z": tz, "dz": 0}]
+
+        cache: dict[tuple, tuple | None] = {}
+
+        def walk(z, frm, to):
+            key = (z, frm, to)
+            if key not in cache:
+                cache[key] = self._grid_path(z, frm, to)
+            return cache[key]
+
+        start = (unit.z, st[0], st[1])
+        GOAL = ("goal",)
+        best: dict = {start: 0.0}
+        prev: dict = {}
+        seq = 0
+        pq: list = [(0.0, 0, start)]
+        while pq:
+            cost, _, node = heapq.heappop(pq)
+            if node == GOAL:
+                break
+            if cost > best.get(node, math.inf):
+                continue
+            z, x, y = node
+            if z == tz:  # can finish here — walk to the destination
+                r = walk(z, (x, y), (tx, ty))
+                if r is not None and cost + r[1] < best.get(GOAL, math.inf):
+                    best[GOAL] = cost + r[1]
+                    prev[GOAL] = (node, {"path": r[0] or [(tx, ty)],
+                                         "z": z, "dz": 0})
+                    seq += 1
+                    heapq.heappush(pq, (best[GOAL], seq, GOAL))
+            for nz, px, py, dz in self._portal_tiles(z):
+                r = walk(z, (x, y), (px, py))
+                if r is None:
+                    continue
+                nnode = (nz, px, py)
+                if cost + r[1] < best.get(nnode, math.inf):
+                    best[nnode] = cost + r[1]
+                    prev[nnode] = (node, {"path": r[0] or [(px, py)],
+                                          "z": z, "dz": dz})
+                    seq += 1
+                    heapq.heappush(pq, (best[nnode], seq, nnode))
+
+        if GOAL not in prev:
+            return None
+        legs, node = [], GOAL
+        while node in prev:
+            pnode, leg = prev[node]
+            legs.append(leg)
+            node = pnode
+        legs.reverse()
+        return legs
+
+    def _portal_tiles(self, z: int):
+        """Level changes leaving level z: (dest_z, x, y, dz) per tunnel.
+        Portals whose arrival tile is flooded are skipped so a route never
+        marches a unit into drowning."""
+        for px, py in self.tunnels.get(z, ()):  # descend: tunnels[z] -> z-1
+            if (px, py) not in self.water.get(z - 1, ()):
+                yield z - 1, px, py, -1
+        for px, py in self.tunnels.get(z + 1, ()):  # ascend: tunnels[z+1] -> z+1
+            if z + 1 >= 0 or (px, py) not in self.water.get(z + 1, ()):
+                yield z + 1, px, py, 1
+
+    def _grid_path(self, z: int, start: tuple[int, int],
+                   goal: tuple[int, int]) -> tuple[list, float] | None:
+        """A* over passable tiles on level z (8-connected, no diagonal
+        corner-cutting through solid tiles). Returns (waypoints, cost) where
+        waypoints run from the tile after `start` through `goal`, or None if
+        `goal` is unreachable on foot."""
+        gx, gy = goal
+        if start == goal:
+            return [], 0.0
+        if not self._passable(gx, gy, z):
+            return None
+        sx, sy = start
+        gscore = {start: 0.0}
+        came: dict = {}
+        seq = 0
+        pq = [(_dist(sx, sy, gx, gy), 0, start)]
+        while pq:
+            _, _, cur = heapq.heappop(pq)
+            if cur == goal:
+                path, node = [], cur
+                while node in came:
+                    path.append(node)
+                    node = came[node]
+                path.reverse()
+                return path, gscore[goal]
+            cx, cy = cur
+            base = gscore[cur]
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    nx, ny = cx + dx, cy + dy
+                    if not (0 <= nx < MAP_WIDTH and 0 <= ny < MAP_HEIGHT):
+                        continue
+                    if not self._passable(nx, ny, z):
+                        continue
+                    if dx != 0 and dy != 0 and (
+                            not self._passable(cx + dx, cy, z)
+                            or not self._passable(cx, cy + dy, z)):
+                        continue  # would clip a solid corner
+                    ng = base + (1.4142 if dx and dy else 1.0)
+                    nn = (nx, ny)
+                    if ng < gscore.get(nn, math.inf):
+                        gscore[nn] = ng
+                        came[nn] = cur
+                        seq += 1
+                        heapq.heappush(pq, (ng + _dist(nx, ny, gx, gy),
+                                            seq, nn))
+        return None
 
     def _site_occupied(self, player_id: int, tx: float, ty: float,
                        z: int) -> bool:
@@ -508,10 +646,10 @@ class GameState:
             return False
         tx, ty, z = spot
         unit_ids = cmd.get("unit_ids", [])
-        if (tx, ty) in self.holes[z]:
-            # existing hole: any selected unit may walk over and descend
+        if (tx, ty) in self.tunnels[z]:
+            # existing tunnel: any selected unit may walk over and descend
             return self._order_transit(player_id, unit_ids, tx, ty, z, -1)
-        if not self._passable(tx, ty, z) or (tx, ty) in self.ladders.get(z, ()):
+        if not self._passable(tx, ty, z):
             return False
         worker = self._pick_digger(player_id, unit_ids, z)
         if worker is None:
@@ -525,10 +663,10 @@ class GameState:
             return False
         tx, ty, z = spot
         unit_ids = cmd.get("unit_ids", [])
-        if (tx, ty) in self.ladders[z]:
-            # existing ladder: any selected unit may walk over and ascend
+        if (tx, ty) in self.tunnels[z + 1]:
+            # existing tunnel: any selected unit may walk over and ascend
             return self._order_transit(player_id, unit_ids, tx, ty, z, +1)
-        if not self._passable(tx, ty, z) or (tx, ty) in self.holes.get(z, ()):
+        if not self._passable(tx, ty, z):
             return False
         worker = self._pick_digger(player_id, unit_ids, z)
         if worker is None:
@@ -555,6 +693,7 @@ class GameState:
         self._move_units()
         self._separate_units()
         self._resolve_transit()
+        self._resolve_route()
         self._resolve_digging()
         self._resolve_building()
         self._resolve_gathering()
@@ -595,6 +734,11 @@ class GameState:
                 site = (unit.transit["x"], unit.transit["y"])
                 if _dist(unit.x, unit.y, *site) > TRANSIT_RANGE:
                     move_target = site
+            elif unit.route:
+                leg = unit.route[0]
+                if leg["z"] == unit.z and leg["path"]:
+                    wx, wy = leg["path"][0]
+                    move_target = (float(wx), float(wy))
             elif unit.gathering and unit.gather_target is not None:
                 node = self.resource_nodes.get(unit.gather_target)
                 if node:
@@ -674,15 +818,58 @@ class GameState:
             if _dist(unit.x, unit.y, t["x"], t["y"]) > TRANSIT_RANGE:
                 continue
             tile = (t["x"], t["y"])
-            passage = self.holes if t["dz"] < 0 else self.ladders
+            # a tunnel at z joins z and z - 1, so going up looks at z + 1
+            key = unit.z if t["dz"] < 0 else unit.z + 1
             unit.transit = None
-            if tile in passage.get(unit.z, ()):
+            if tile in self.tunnels.get(key, ()):
                 unit.x, unit.y = float(tile[0]), float(tile[1])
                 unit.z += t["dz"]
                 self._maybe_drown(unit)
 
+    def _resolve_route(self):
+        """Advance auto-routed units along their waypoint path: consume
+        reached waypoints, and at a leg's final tile either transit to the
+        next level or (dz == 0) finish. A tunnel that flooded away before the
+        unit arrives triggers a replan toward the same destination."""
+        for unit in self.units.values():
+            if unit.hp <= 0 or not unit.route:
+                continue
+            leg = unit.route[0]
+            if leg["z"] != unit.z:
+                unit.route = []  # desynced with the plan; drop it
+                continue
+            path = leg["path"]
+            while len(path) > 1 and _dist(
+                    unit.x, unit.y, path[0][0], path[0][1]) <= 0.6:
+                path.pop(0)
+            if len(path) > 1:
+                continue  # still walking toward an intermediate waypoint
+            wx, wy = path[0]
+            reach = TRANSIT_RANGE if leg["dz"] != 0 else 0.5
+            if _dist(unit.x, unit.y, wx, wy) > reach:
+                continue
+            if leg["dz"] == 0:
+                unit.route = []  # arrived at the destination
+                continue
+            tile = (int(wx), int(wy))
+            key = unit.z if leg["dz"] < 0 else unit.z + 1
+            if tile in self.tunnels.get(key, ()):
+                unit.x, unit.y = float(tile[0]), float(tile[1])
+                unit.z += leg["dz"]
+                unit.route.pop(0)
+                self._maybe_drown(unit)
+                if unit.hp <= 0:
+                    unit.route = []
+            else:
+                # the tunnel was destroyed (flood) before the unit reached
+                # it; replan from here toward the same destination
+                dest = unit.route[-1]
+                dx, dy = dest["path"][-1]
+                unit.route = self._plan_route(unit, int(dx), int(dy),
+                                              dest["z"]) or []
+
     def _maybe_drown(self, unit: Unit):
-        """Arriving on a flooded tile (e.g. dropping through a hole into
+        """Arriving on a flooded tile (e.g. dropping through a tunnel into
         an underground lake) is fatal."""
         if (unit.z < 0 and (int(round(unit.x)), int(round(unit.y)))
                 in self.water[unit.z]):
@@ -714,9 +901,9 @@ class GameState:
             reach = DIG_RANGE if kind == "dig" else TRANSIT_RANGE
             if _dist(unit.x, unit.y, tx, ty) > reach:
                 continue
-            # a hole/ladder someone else finished meanwhile skips the digging
-            if (kind == "down" and tile in self.holes[z]) \
-                    or (kind == "up" and tile in self.ladders[z]):
+            # a tunnel someone else finished meanwhile skips the digging
+            if (kind == "down" and tile in self.tunnels[z]) \
+                    or (kind == "up" and tile in self.tunnels[z + 1]):
                 task["progress"] = durations[kind]
             task["progress"] += 1
             if task["progress"] < durations[kind]:
@@ -732,7 +919,7 @@ class GameState:
                                         "owner": unit.owner,
                                         "x": tx, "y": ty, "z": z})
             elif kind == "down":
-                self.holes[z].add(tile)
+                self.tunnels[z].add(tile)
                 self.dug[z - 1].add(tile)
                 unit.x, unit.y = float(tx), float(ty)
                 unit.z = z - 1
@@ -740,7 +927,7 @@ class GameState:
                 self.events.append({"kind": "dug_down", "owner": unit.owner,
                                     "x": tx, "y": ty, "z": z - 1})
             else:  # up
-                self.ladders[z].add(tile)
+                self.tunnels[z + 1].add(tile)
                 if z + 1 < 0:
                     self.dug[z + 1].add(tile)
                 unit.x, unit.y = float(tx), float(ty)
@@ -796,6 +983,15 @@ class GameState:
                     seen.add(n)
                     queue.append(n)
         self.water[z] |= set(flooded)
+        # water washes out any tunnel touching a flooded tile — including
+        # the breach tunnel itself, which floods the instant it opens
+        for tile in flooded:
+            for tz in (z, z + 1):
+                if tile in self.tunnels.get(tz, ()):
+                    self.tunnels[tz].discard(tile)
+                    self.events.append({"kind": "tunnel_destroyed",
+                                        "x": tile[0], "y": tile[1],
+                                        "z": z, "cause": "flood"})
         # the source drains tile-for-tile, nearest the breach first
         drained = sorted(source,
                          key=lambda c: _dist(c[0], c[1], tx, ty))[:len(flooded)]
