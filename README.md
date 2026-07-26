@@ -8,6 +8,7 @@ your enemies.
 
 ---
 *Human note:*
+- [CLIRTS - Overview (YouTube)](https://youtu.be/jbfcybCL8ZQ)
 - *This is hosted live at wss://cli-rts.fly.dev/play (for now).*
 - *Venmo graciously accepted to keep servers running: @samchaaa*
 - *Currently everything is just public (no private rooms / password-protection)... so be nice!*
