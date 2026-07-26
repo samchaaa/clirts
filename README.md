@@ -88,14 +88,24 @@ A sidebar right of the map shows details for whatever is under the cursor
 (unit HP, node amount), a breakdown of your current selection, and a rolling
 event log (kills, attacks, floods, finished digs, depleted nodes, …).
 
-**Map legend:** `o` worker · `T` tank · `r` range · `#` fort · `=` wall ·
-`"` farm (green 2x2 field, neutral) · `Ψ` space laser dish ·
-`░ X` active laser burn area + beam center (team color) ·
-`●` laser bore pit (fall = death) · `$` resource node · `~` lake / flood water · `^` mountain (surface) or solid
-rock (underground, dim) · `↓` tunnel down · `↑` tunnel up · `↕` both ·
-highlighted (black on your color) = selected ·
-`* x` projectile tracer + impact · colors identify players
-(blue/red/green/yellow by join order).
+**Map legend:**
+
+- `o` worker
+- `T` tank
+- `r` range
+- `#` fort
+- `=` wall
+- `"` farm (green 2x2 field, neutral)
+- `Ψ` space laser dish
+- `░ X` active laser burn area + beam center (team color)
+- `●` laser bore pit (fall = death)
+- `$` resource node
+- `~` lake / flood water
+- `^` mountain (surface) or solid rock (underground, dim)
+- `↓` tunnel down · `↑` tunnel up · `↕` both
+- highlighted (black on your color) = selected
+- `* x` projectile tracer + impact
+- colors identify players (blue/red/green/yellow by join order)
 
 ## Terrain
 
